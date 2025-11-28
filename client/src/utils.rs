@@ -1,22 +1,17 @@
 use sha2::{Digest, Sha256};
-use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, ErrorKind};
 use std::path::Path;
 
-/// Compute SHA256 hash of a file
+/// Compute SHA256 hash based only on the file name
 pub fn compute_file_hash<P: AsRef<Path>>(path: P) -> io::Result<String> {
-    let mut file = File::open(path)?;
+    let name = path
+        .as_ref()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "Invalid file name"))?;
+
     let mut hasher = Sha256::new();
-    let mut buffer = [0; 8192];
-
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-
+    hasher.update(name.as_bytes());
     Ok(format!("{:x}", hasher.finalize()))
 }
 

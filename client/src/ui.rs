@@ -5,6 +5,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::{
+    constants::{LOCAL_WS_URL, RENDER_WS_URL},
     player::{VideoFrame, VideoPlayer},
     protocol::{Message, SyncCommand},
     sync::SyncClient,
@@ -65,7 +66,7 @@ impl HangApp {
             sync,
             video_file: None,
             video_hash: None,
-            server_url: "ws://localhost:3005/ws".to_string(),
+            server_url: LOCAL_WS_URL.to_string(),
             room_id_input: String::new(),
             status_message: "Select a video file to begin".to_string(),
             error_message: None,
@@ -138,6 +139,12 @@ impl HangApp {
                             self.audio_tracks = self.player.get_audio_tracks().unwrap_or_default();
                             self.subtitle_tracks =
                                 self.player.get_subtitle_tracks().unwrap_or_default();
+
+                            if let Err(e) = self.player.play() {
+                                self.error_message = Some(format!("Failed to auto-play: {}", e));
+                            } else {
+                                self.is_playing = true;
+                            }
                         }
                         Err(e) => {
                             self.error_message = Some(format!("Failed to hash file: {}", e));
@@ -403,6 +410,7 @@ impl eframe::App for HangApp {
 
                 ui.label("Server URL:");
                 ui.text_edit_singleline(&mut self.server_url);
+                ui.small(format!("Fallback: {}", RENDER_WS_URL));
                 ui.add_space(10.0);
 
                 if !self.in_room {

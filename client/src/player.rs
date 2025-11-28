@@ -190,11 +190,6 @@ impl VideoPlayer {
         unsafe { libvlc_media_player_set_time(self.media_player, target) }
     }
 
-    /// Get current loaded file path
-    pub fn current_file(&self) -> Option<String> {
-        self.current_file.lock().clone()
-    }
-
     /// Retrieve latest RGB frame if available
     pub fn latest_frame(&self) -> Option<VideoFrame> {
         self.frame_state.grab_frame()

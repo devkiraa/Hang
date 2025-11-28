@@ -1,3 +1,4 @@
+mod constants;
 mod player;
 mod protocol;
 mod sync;
@@ -8,6 +9,7 @@ use anyhow::Result;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
+use constants::{LOCAL_WS_URL, RENDER_WS_URL};
 use player::VideoPlayer;
 use sync::SyncClient;
 use ui::HangApp;
@@ -29,36 +31,56 @@ async fn main() -> Result<()> {
 
     // Store app state for message handling
     let app_state = Arc::new(Mutex::new(None::<Arc<Mutex<HangApp>>>));
-    let app_state_clone = Arc::clone(&app_state);
 
-    // Connect to sync server
-    let sync_clone = Arc::clone(&sync);
+    // Connect to sync server, preferring localhost with Render fallback
+    let sync_for_connection = Arc::clone(&sync);
+    let app_state_for_connection = Arc::clone(&app_state);
     tokio::spawn(async move {
-        let result = sync_clone
-            .connect("ws://localhost:3005/ws", move |msg| {
-                if let Some(app_arc) = app_state_clone.lock().as_ref() {
-                    let mut app = app_arc.lock();
-                    app.handle_server_message(msg);
-                }
-            })
-            .await;
+        let endpoints = [
+            ("local development", LOCAL_WS_URL),
+            ("Render deployment", RENDER_WS_URL),
+        ];
 
-        if let Err(e) = result {
-            tracing::error!("Failed to connect to server: {}", e);
+        for (label, url) in endpoints {
+            let handler_state = Arc::clone(&app_state_for_connection);
+            match sync_for_connection
+                .connect(url, move |msg| {
+                    if let Some(app_arc) = handler_state.lock().as_ref() {
+                        let mut app = app_arc.lock();
+                        app.handle_server_message(msg);
+                    }
+                })
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!("Connected to {label} sync server at {url}");
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to connect to {label} sync server at {url}: {}", e)
+                }
+            }
         }
+
+        tracing::error!(
+            "Unable to reach either the local server ({}) or Render backend ({}).",
+            LOCAL_WS_URL,
+            RENDER_WS_URL
+        );
     });
 
     // Give connection time to establish
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Launch GUI on main thread
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 800.0])
             .with_min_inner_size([1000.0, 600.0])
             .with_title("Hang Sync Player"),
         ..Default::default()
     };
+    options.renderer = eframe::Renderer::Glow;
 
     let player_clone = Arc::clone(&player);
     let sync_clone = Arc::clone(&sync);

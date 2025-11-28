@@ -97,21 +97,6 @@ impl SyncClient {
         *self.is_host.lock() = false;
     }
 
-    /// Get current room ID
-    pub fn room_id(&self) -> Option<Uuid> {
-        *self.room_id.lock()
-    }
-
-    /// Check if client is room host
-    pub fn is_host(&self) -> bool {
-        *self.is_host.lock()
-    }
-
-    /// Get client ID
-    pub fn client_id(&self) -> Option<Uuid> {
-        *self.client_id.lock()
-    }
-
     fn send_message(&self, msg: Message) -> Result<()> {
         if let Some(tx) = self.tx.lock().as_ref() {
             tx.send(msg).context("Failed to send message")?;
