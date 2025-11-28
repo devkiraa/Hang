@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: hang-sync-server
+    env: rust
+    plan: free
+    buildCommand: cargo build --release -p hang-server
+    startCommand: ./target/release/hang-server
+    healthCheckPath: /healthz
+    envVars:
+      - key: RUST_LOG
+        value: info
