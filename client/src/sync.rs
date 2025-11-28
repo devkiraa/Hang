@@ -9,7 +9,7 @@ use crate::protocol::{Message, SyncCommand};
 
 pub struct SyncClient {
     tx: Mutex<Option<mpsc::UnboundedSender<Message>>>,
-    room_id: Mutex<Option<Uuid>>,
+    room_id: Mutex<Option<String>>,
     client_id: Mutex<Option<Uuid>>,
     is_host: Mutex<bool>,
 }
@@ -69,7 +69,7 @@ impl SyncClient {
     }
 
     /// Join an existing room
-    pub fn join_room(&self, room_id: Uuid, file_hash: String) -> Result<()> {
+    pub fn join_room(&self, room_id: String, file_hash: String) -> Result<()> {
         self.send_message(Message::JoinRoom { room_id, file_hash })
     }
 
@@ -84,7 +84,7 @@ impl SyncClient {
     }
 
     /// Update room state after receiving server response
-    pub fn set_room_joined(&self, room_id: Uuid, client_id: Uuid, is_host: bool) {
+    pub fn set_room_joined(&self, room_id: String, client_id: Uuid, is_host: bool) {
         *self.room_id.lock() = Some(room_id);
         *self.client_id.lock() = Some(client_id);
         *self.is_host.lock() = is_host;

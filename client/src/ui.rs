@@ -1,8 +1,8 @@
 use eframe::egui;
 use parking_lot::Mutex;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use uuid::Uuid;
 
 use crate::{
     constants::{LOCAL_WS_URL, RENDER_WS_URL},
@@ -11,6 +11,10 @@ use crate::{
     sync::SyncClient,
     utils::{compute_file_hash, format_time},
 };
+
+const VIDEO_EXTENSIONS: &[&str] = &[
+    "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v",
+];
 
 pub struct HangApp {
     // Video player
@@ -36,8 +40,10 @@ pub struct HangApp {
 
     // Room state
     in_room: bool,
-    current_room_id: Option<Uuid>,
+    current_room_id: Option<String>,
     is_host: bool,
+    participant_count: usize,
+    room_dialog_open: bool,
 
     // Settings panel
     show_settings: bool,
@@ -78,6 +84,8 @@ impl HangApp {
             in_room: false,
             current_room_id: None,
             is_host: false,
+            participant_count: 0,
+            room_dialog_open: false,
             show_settings: false,
             audio_tracks: Vec::new(),
             subtitle_tracks: Vec::new(),
@@ -88,6 +96,52 @@ impl HangApp {
             video_texture: None,
             last_frame_size: None,
         }
+    }
+
+    fn load_video_from_path(&mut self, path: &Path) -> Result<(), String> {
+        self.player.load_file(path)?;
+        let hash = compute_file_hash(path).map_err(|e| e.to_string())?;
+
+        self.video_file = Some(path.to_path_buf());
+        self.video_hash = Some(hash);
+        self.video_texture = None;
+        self.last_frame_size = None;
+        self.status_message = format!(
+            "Loaded: {}",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+        );
+        self.error_message = None;
+
+        self.audio_tracks = self.player.get_audio_tracks().unwrap_or_default();
+        self.subtitle_tracks = self.player.get_subtitle_tracks().unwrap_or_default();
+
+        if let Err(e) = self.player.play() {
+            self.error_message = Some(format!("Failed to auto-play: {}", e));
+        } else {
+            self.is_playing = true;
+        }
+
+        Ok(())
+    }
+
+    fn first_supported_file(folder: &Path) -> Option<PathBuf> {
+        let entries = fs::read_dir(folder).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && Self::is_supported_video(&path) {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    fn is_supported_video(path: &Path) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| VIDEO_EXTENSIONS.iter().any(|allowed| ext.eq_ignore_ascii_case(allowed)))
+            .unwrap_or(false)
     }
 
     fn update_playback_state(&mut self) {
@@ -112,47 +166,25 @@ impl HangApp {
 
     fn select_video_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter(
-                "Video Files",
-                &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"],
-            )
+            .add_filter("Video Files", VIDEO_EXTENSIONS)
             .pick_file()
         {
-            match self.player.load_file(&path) {
-                Ok(_) => {
-                    // Compute file hash
-                    match compute_file_hash(&path) {
-                        Ok(hash) => {
-                            self.video_file = Some(path.clone());
-                            self.video_hash = Some(hash);
-                            self.video_texture = None;
-                            self.last_frame_size = None;
-                            self.status_message = format!(
-                                "Loaded: {}",
-                                path.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("unknown")
-                            );
-                            self.error_message = None;
+            if let Err(e) = self.load_video_from_path(&path) {
+                self.error_message = Some(format!("Failed to load video: {}", e));
+            }
+        }
+    }
 
-                            // Load tracks
-                            self.audio_tracks = self.player.get_audio_tracks().unwrap_or_default();
-                            self.subtitle_tracks =
-                                self.player.get_subtitle_tracks().unwrap_or_default();
-
-                            if let Err(e) = self.player.play() {
-                                self.error_message = Some(format!("Failed to auto-play: {}", e));
-                            } else {
-                                self.is_playing = true;
-                            }
-                        }
-                        Err(e) => {
-                            self.error_message = Some(format!("Failed to hash file: {}", e));
-                        }
+    fn select_video_folder(&mut self) {
+        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+            match Self::first_supported_file(&folder) {
+                Some(file) => {
+                    if let Err(e) = self.load_video_from_path(&file) {
+                        self.error_message = Some(format!("Failed to load video: {}", e));
                     }
                 }
-                Err(e) => {
-                    self.error_message = Some(format!("Failed to load video: {}", e));
+                None => {
+                    self.error_message = Some("No supported video files found in that folder".into());
                 }
             }
         }
@@ -169,15 +201,23 @@ impl HangApp {
     }
 
     fn join_room(&mut self) {
-        if let (Some(hash), Ok(room_id)) = (&self.video_hash, Uuid::parse_str(&self.room_id_input))
-        {
-            if let Err(e) = self.sync.join_room(room_id, hash.clone()) {
+        let code = self.room_id_input.trim().to_string();
+        if self.video_hash.is_none() {
+            self.error_message = Some("Load the same video before joining a room".into());
+            return;
+        }
+
+        if !Self::is_valid_room_code(&code) {
+            self.error_message = Some("Room code must look like 123-456".into());
+            return;
+        }
+
+        if let Some(hash) = &self.video_hash {
+            if let Err(e) = self.sync.join_room(code.clone(), hash.clone()) {
                 self.error_message = Some(format!("Failed to join room: {}", e));
             } else {
-                self.status_message = "Joining room...".to_string();
+                self.status_message = format!("Joining room {}...", code);
             }
-        } else {
-            self.error_message = Some("Invalid room ID or no video loaded".to_string());
         }
     }
 
@@ -188,6 +228,7 @@ impl HangApp {
         self.in_room = false;
         self.current_room_id = None;
         self.is_host = false;
+        self.participant_count = 0;
         self.status_message = "Left room".to_string();
     }
 
@@ -242,22 +283,26 @@ impl HangApp {
     pub fn handle_server_message(&mut self, msg: Message) {
         match msg {
             Message::RoomCreated { room_id, client_id } => {
-                self.sync.set_room_joined(room_id, client_id, true);
+                self.sync
+                    .set_room_joined(room_id.clone(), client_id, true);
                 self.in_room = true;
-                self.current_room_id = Some(room_id);
+                self.current_room_id = Some(room_id.clone());
                 self.is_host = true;
+                self.participant_count = 1;
                 self.status_message = format!("Room created: {}", room_id);
-                self.room_id_input = room_id.to_string();
+                self.room_id_input = room_id;
             }
             Message::RoomJoined {
                 room_id,
                 client_id,
                 is_host,
             } => {
-                self.sync.set_room_joined(room_id, client_id, is_host);
+                self.sync
+                    .set_room_joined(room_id.clone(), client_id, is_host);
                 self.in_room = true;
-                self.current_room_id = Some(room_id);
+                self.current_room_id = Some(room_id.clone());
                 self.is_host = is_host;
+                self.participant_count = 1;
                 self.status_message = format!(
                     "Joined room: {} ({})",
                     room_id,
@@ -269,6 +314,7 @@ impl HangApp {
                 self.in_room = false;
                 self.current_room_id = None;
                 self.is_host = false;
+                self.participant_count = 0;
                 self.status_message = "Left room".to_string();
             }
             Message::RoomNotFound => {
@@ -285,6 +331,11 @@ impl HangApp {
             }
             Message::Error { message } => {
                 self.error_message = Some(message);
+            }
+            Message::RoomMemberUpdate { room_id, members } => {
+                if self.current_room_id.as_deref() == Some(room_id.as_str()) {
+                    self.participant_count = members;
+                }
             }
             _ => {}
         }
@@ -374,12 +425,165 @@ impl HangApp {
         size.y = size.y.max(1.0);
         size
     }
+
+    fn handle_file_drop(&mut self, ctx: &egui::Context) {
+        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
+        if dropped_files.is_empty() {
+            return;
+        }
+
+        for file in dropped_files {
+            if let Some(path) = file.path {
+                if let Err(e) = self.load_video_from_path(&path) {
+                    self.error_message = Some(format!("Failed to open dropped file: {}", e));
+                }
+                break;
+            }
+        }
+    }
+
+    fn render_room_dialog(&mut self, ctx: &egui::Context) {
+        if !self.room_dialog_open {
+            return;
+        }
+
+        let mut dialog_open = self.room_dialog_open;
+        let mut create_room_requested = false;
+        let mut join_room_requested = false;
+        let mut leave_room_requested = false;
+
+        egui::Window::new("Room Controls")
+            .open(&mut dialog_open)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.label("Server URL:");
+                ui.text_edit_singleline(&mut self.server_url);
+                ui.small(format!("Fallback: {}", RENDER_WS_URL));
+                ui.separator();
+
+                if let Some(code) = self.current_room_id.clone() {
+                    ui.label(format!("Current room: {}", code));
+                    ui.horizontal(|ui| {
+                        if ui.button("Copy code").clicked() {
+                            ui.output_mut(|o| o.copied_text = code.clone());
+                        }
+                        if ui.button("Leave room").clicked() {
+                            leave_room_requested = true;
+                        }
+                    });
+                    ui.separator();
+                    ui.checkbox(&mut self.sync_enabled, "Enable sync");
+                    ui.label(format!(
+                        "Participants detected: {}",
+                        self.participant_count.max(1)
+                    ));
+                } else {
+                    ui.label("Create a room to get a sharable 6-digit code.");
+                    if ui
+                        .add_enabled(
+                            self.video_hash.is_some(),
+                            egui::Button::new("Create Room"),
+                        )
+                        .clicked()
+                    {
+                        create_room_requested = true;
+                    }
+
+                    ui.separator();
+                    ui.label("Join an existing room:");
+                    let response = ui.text_edit_singleline(&mut self.room_id_input);
+                    if response.changed() {
+                        self.sanitize_room_code_input();
+                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(self.video_hash.is_some(), egui::Button::new("Join"))
+                            .clicked()
+                        {
+                            join_room_requested = true;
+                        }
+                        ui.label("Format: 123-456");
+                    });
+                }
+
+                ui.separator();
+                ui.heading("Current Video");
+                if let Some(path) = &self.video_file {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        ui.label(format!("File: {}", name));
+                    }
+                    if let Some(hash) = &self.video_hash {
+                        ui.label(format!("Hash: {}...", &hash[..16]));
+                    }
+                } else {
+                    ui.label("No video loaded");
+                }
+            });
+
+        if leave_room_requested {
+            self.leave_room();
+            dialog_open = false;
+        }
+        if create_room_requested {
+            self.create_room();
+        }
+        if join_room_requested {
+            self.join_room();
+        }
+
+        self.room_dialog_open = dialog_open;
+    }
+
+    fn sanitize_room_code_input(&mut self) {
+        let digits: String = self
+            .room_id_input
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .collect();
+        if digits.len() <= 3 {
+            self.room_id_input = digits;
+        } else {
+            let (left, right) = digits.split_at(3);
+            let right = &right[..right.len().min(3)];
+            self.room_id_input = format!("{left}-{right}");
+        }
+    }
+
+    fn is_valid_room_code(code: &str) -> bool {
+        let trimmed = code.trim();
+        if trimmed.len() != 7 || trimmed.as_bytes()[3] != b'-' {
+            return false;
+        }
+        trimmed
+            .chars()
+            .enumerate()
+            .all(|(idx, ch)| idx == 3 || ch.is_ascii_digit())
+    }
+
+    fn draw_participant_indicator(&self, ui: &mut egui::Ui) {
+        if !self.in_room {
+            return;
+        }
+        let count = self.participant_count.max(1);
+        ui.horizontal(|ui| {
+            ui.label("Participants:");
+            for idx in 0..count {
+                let color = if idx == 0 {
+                    egui::Color32::from_rgb(120, 200, 120)
+                } else {
+                    egui::Color32::from_rgb(58, 198, 86)
+                };
+                ui.colored_label(color, "●");
+            }
+        });
+    }
 }
 
 impl eframe::App for HangApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.update_playback_state();
         self.update_video_texture(ctx);
+        self.handle_file_drop(ctx);
 
         // Top menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -391,8 +595,16 @@ impl eframe::App for HangApp {
                     self.select_video_file();
                 }
 
+                if ui.button("Open Folder").clicked() {
+                    self.select_video_folder();
+                }
+
                 if ui.button("⚙ Settings").clicked() {
                     self.show_settings = !self.show_settings;
+                }
+
+                if ui.button("Room Controls").clicked() {
+                    self.room_dialog_open = true;
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -401,83 +613,7 @@ impl eframe::App for HangApp {
             });
         });
 
-        // Side panel for room controls
-        egui::SidePanel::left("room_panel")
-            .min_width(250.0)
-            .show(ctx, |ui| {
-                ui.heading("Room Controls");
-                ui.separator();
-
-                ui.label("Server URL:");
-                ui.text_edit_singleline(&mut self.server_url);
-                ui.small(format!("Fallback: {}", RENDER_WS_URL));
-                ui.add_space(10.0);
-
-                if !self.in_room {
-                    ui.label("Create or Join Room:");
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(
-                                self.video_file.is_some(),
-                                egui::Button::new("Create Room"),
-                            )
-                            .clicked()
-                        {
-                            self.create_room();
-                        }
-                    });
-
-                    ui.add_space(5.0);
-                    ui.label("Room ID:");
-                    ui.text_edit_singleline(&mut self.room_id_input);
-                    if ui
-                        .add_enabled(
-                            self.video_file.is_some() && !self.room_id_input.is_empty(),
-                            egui::Button::new("Join Room"),
-                        )
-                        .clicked()
-                    {
-                        self.join_room();
-                    }
-                } else {
-                    ui.label(format!(
-                        "Room: {}",
-                        self.current_room_id
-                            .map(|id| id.to_string())
-                            .unwrap_or_default()
-                    ));
-                    ui.label(format!(
-                        "Role: {}",
-                        if self.is_host { "Host" } else { "Guest" }
-                    ));
-
-                    ui.add_space(10.0);
-                    ui.checkbox(&mut self.sync_enabled, "Enable Sync");
-
-                    ui.add_space(10.0);
-                    if ui.button("Leave Room").clicked() {
-                        self.leave_room();
-                    }
-                }
-
-                ui.add_space(20.0);
-                ui.separator();
-                ui.heading("Current Video");
-
-                if let Some(path) = &self.video_file {
-                    ui.label(format!(
-                        "File: {}",
-                        path.file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown")
-                    ));
-                    if let Some(hash) = &self.video_hash {
-                        ui.label(format!("Hash: {}...", &hash[..16]));
-                    }
-                } else {
-                    ui.label("No video loaded");
-                }
-            });
+        self.render_room_dialog(ctx);
 
         // Bottom control panel
         egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
@@ -554,6 +690,11 @@ impl eframe::App for HangApp {
             });
 
             ui.add_space(5.0);
+
+            if self.in_room {
+                ui.separator();
+                self.draw_participant_indicator(ui);
+            }
         });
 
         // Settings window
@@ -628,6 +769,14 @@ impl eframe::App for HangApp {
                 ui.centered_and_justified(|ui| {
                     if self.video_file.is_none() {
                         ui.heading("Open a video file to begin");
+                        ui.add_space(10.0);
+                        if ui.button("Open Video").clicked() {
+                            self.select_video_file();
+                        }
+                        if ui.button("Open Folder").clicked() {
+                            self.select_video_folder();
+                        }
+                        ui.label("…or drag & drop a file anywhere in this window");
                     } else {
                         ui.heading("Loading video...");
                     }

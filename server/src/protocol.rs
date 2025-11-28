@@ -10,7 +10,7 @@ pub enum Message {
         file_hash: String,
     },
     JoinRoom {
-        room_id: Uuid,
+        room_id: String,
         file_hash: String,
     },
     LeaveRoom,
@@ -18,11 +18,11 @@ pub enum Message {
 
     // Server -> Client
     RoomCreated {
-        room_id: Uuid,
+        room_id: String,
         client_id: Uuid,
     },
     RoomJoined {
-        room_id: Uuid,
+        room_id: String,
         client_id: Uuid,
         is_host: bool,
     },
@@ -34,6 +34,10 @@ pub enum Message {
     SyncBroadcast {
         from_client: Uuid,
         command: SyncCommand,
+    },
+    RoomMemberUpdate {
+        room_id: String,
+        members: usize,
     },
     Error {
         message: String,
@@ -61,5 +65,5 @@ pub struct Room {
 /// Client connection metadata
 #[derive(Debug, Clone)]
 pub struct ClientInfo {
-    pub room_id: Option<Uuid>,
+    pub room_id: Option<String>,
 }

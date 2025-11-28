@@ -150,14 +150,18 @@ async fn handle_message(
         Message::CreateRoom { file_hash } => {
             let room_id = state.create_room(client_id, file_hash);
             if let Some(tx) = client_senders.read().await.get(&client_id) {
-                let _ = tx.send(Message::RoomCreated { room_id, client_id });
+                let _ = tx.send(Message::RoomCreated {
+                    room_id: room_id.clone(),
+                    client_id,
+                });
             }
+            broadcast_member_count(&state, client_senders, &room_id).await;
         }
 
         Message::JoinRoom { room_id, file_hash } => {
-            let response = match state.join_room(client_id, room_id, &file_hash).await {
+            let response = match state.join_room(client_id, &room_id, &file_hash).await {
                 Ok(is_host) => Message::RoomJoined {
-                    room_id,
+                    room_id: room_id.clone(),
                     client_id,
                     is_host,
                 },
@@ -173,10 +177,14 @@ async fn handle_message(
             if let Some(tx) = client_senders.read().await.get(&client_id) {
                 let _ = tx.send(response);
             }
+
+            broadcast_member_count(&state, client_senders, &room_id).await;
         }
 
         Message::LeaveRoom => {
-            state.leave_room(client_id).await;
+            if let Some(room_id) = state.leave_room(client_id).await {
+                broadcast_member_count(&state, client_senders, &room_id).await;
+            }
             if let Some(tx) = client_senders.read().await.get(&client_id) {
                 let _ = tx.send(Message::RoomLeft);
             }
@@ -191,7 +199,7 @@ async fn handle_message(
 
             if let Some(room_id) = room_id {
                 // Broadcast to all room members
-                broadcast_to_room(state, client_senders, room_id, client_id, command).await;
+                broadcast_to_room(state, client_senders, &room_id, client_id, command).await;
             }
         }
 
@@ -206,7 +214,7 @@ async fn handle_message(
 async fn broadcast_to_room(
     state: &ServerState,
     client_senders: &ClientSenders,
-    room_id: Uuid,
+    room_id: &str,
     from_client: Uuid,
     command: SyncCommand,
 ) {
@@ -229,6 +237,27 @@ async fn broadcast_to_room(
     for member_id in members {
         if let Some(tx) = senders.get(&member_id) {
             let _ = tx.send(broadcast_msg.clone());
+        }
+    }
+}
+
+async fn broadcast_member_count(
+    state: &ServerState,
+    client_senders: &ClientSenders,
+    room_id: &str,
+) {
+    let members = state.get_room_members(room_id).await;
+    let count = members.len();
+    if count == 0 {
+        return;
+    }
+    let senders = client_senders.read().await;
+    for member_id in members {
+        if let Some(tx) = senders.get(&member_id) {
+            let _ = tx.send(Message::RoomMemberUpdate {
+                room_id: room_id.to_string(),
+                members: count,
+            });
         }
     }
 }
