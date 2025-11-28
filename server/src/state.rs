@@ -125,8 +125,7 @@ impl ServerState {
     }
 
     pub fn add_client(&self, client_id: Uuid) {
-        self.clients
-            .insert(client_id, ClientInfo { room_id: None });
+        self.clients.insert(client_id, ClientInfo { room_id: None });
         tracing::info!("Client {} connected", client_id);
     }
 

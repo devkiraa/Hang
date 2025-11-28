@@ -1,6 +1,5 @@
 use eframe::egui;
 use parking_lot::Mutex;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,9 +11,7 @@ use crate::{
     utils::{compute_file_hash, format_time},
 };
 
-const VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v",
-];
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"];
 
 pub struct HangApp {
     // Video player
@@ -126,21 +123,14 @@ impl HangApp {
         Ok(())
     }
 
-    fn first_supported_file(folder: &Path) -> Option<PathBuf> {
-        let entries = fs::read_dir(folder).ok()?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() && Self::is_supported_video(&path) {
-                return Some(path);
-            }
-        }
-        None
-    }
-
     fn is_supported_video(path: &Path) -> bool {
         path.extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| VIDEO_EXTENSIONS.iter().any(|allowed| ext.eq_ignore_ascii_case(allowed)))
+            .map(|ext| {
+                VIDEO_EXTENSIONS
+                    .iter()
+                    .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+            })
             .unwrap_or(false)
     }
 
@@ -171,21 +161,6 @@ impl HangApp {
         {
             if let Err(e) = self.load_video_from_path(&path) {
                 self.error_message = Some(format!("Failed to load video: {}", e));
-            }
-        }
-    }
-
-    fn select_video_folder(&mut self) {
-        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-            match Self::first_supported_file(&folder) {
-                Some(file) => {
-                    if let Err(e) = self.load_video_from_path(&file) {
-                        self.error_message = Some(format!("Failed to load video: {}", e));
-                    }
-                }
-                None => {
-                    self.error_message = Some("No supported video files found in that folder".into());
-                }
             }
         }
     }
@@ -283,8 +258,7 @@ impl HangApp {
     pub fn handle_server_message(&mut self, msg: Message) {
         match msg {
             Message::RoomCreated { room_id, client_id } => {
-                self.sync
-                    .set_room_joined(room_id.clone(), client_id, true);
+                self.sync.set_room_joined(room_id.clone(), client_id, true);
                 self.in_room = true;
                 self.current_room_id = Some(room_id.clone());
                 self.is_host = true;
@@ -434,6 +408,10 @@ impl HangApp {
 
         for file in dropped_files {
             if let Some(path) = file.path {
+                if !Self::is_supported_video(&path) {
+                    self.error_message = Some("Unsupported file type".into());
+                    continue;
+                }
                 if let Err(e) = self.load_video_from_path(&path) {
                     self.error_message = Some(format!("Failed to open dropped file: {}", e));
                 }
@@ -480,10 +458,7 @@ impl HangApp {
                 } else {
                     ui.label("Create a room to get a sharable 6-digit code.");
                     if ui
-                        .add_enabled(
-                            self.video_hash.is_some(),
-                            egui::Button::new("Create Room"),
-                        )
+                        .add_enabled(self.video_hash.is_some(), egui::Button::new("Create Room"))
                         .clicked()
                     {
                         create_room_requested = true;
@@ -577,6 +552,22 @@ impl HangApp {
             }
         });
     }
+
+    fn draw_logo(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("▣ Hang")
+                    .font(egui::FontId::proportional(20.0))
+                    .color(egui::Color32::from_rgb(255, 145, 0)),
+            );
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Sync Player")
+                    .font(egui::FontId::proportional(16.0))
+                    .color(egui::Color32::from_rgb(220, 220, 220)),
+            );
+        });
+    }
 }
 
 impl eframe::App for HangApp {
@@ -588,15 +579,11 @@ impl eframe::App for HangApp {
         // Top menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                ui.heading("🎬 Hang Sync Player");
+                self.draw_logo(ui);
                 ui.separator();
 
                 if ui.button("Open Video").clicked() {
                     self.select_video_file();
-                }
-
-                if ui.button("Open Folder").clicked() {
-                    self.select_video_folder();
                 }
 
                 if ui.button("⚙ Settings").clicked() {
@@ -621,11 +608,10 @@ impl eframe::App for HangApp {
 
             // Timeline slider
             let mut position = self.current_position;
-            let slider = ui.add(
-                egui::Slider::new(&mut position, 0.0..=self.duration.max(1.0))
-                    .show_value(false)
-                    .text("Timeline"),
-            );
+            let slider = egui::Slider::new(&mut position, 0.0..=self.duration.max(1.0))
+                .show_value(false)
+                .text("Timeline");
+            let slider = ui.add_sized([ui.available_width(), 22.0], slider);
 
             if slider.drag_stopped() || slider.clicked() {
                 self.seek(position);
@@ -768,13 +754,12 @@ impl eframe::App for HangApp {
             } else {
                 ui.centered_and_justified(|ui| {
                     if self.video_file.is_none() {
-                        ui.heading("Open a video file to begin");
+                        self.draw_logo(ui);
+                        ui.add_space(8.0);
+                        ui.label("Open a video file to begin");
                         ui.add_space(10.0);
                         if ui.button("Open Video").clicked() {
                             self.select_video_file();
-                        }
-                        if ui.button("Open Folder").clicked() {
-                            self.select_video_folder();
                         }
                         ui.label("…or drag & drop a file anywhere in this window");
                     } else {
