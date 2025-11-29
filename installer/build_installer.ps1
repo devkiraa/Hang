@@ -19,7 +19,9 @@ function NormalizeVersion {
     if (-not [System.Version]::TryParse($trimmed, [ref]$parsed)) {
         throw "Version '$Value' must be numeric (e.g. 1.0.0)"
     }
-    return $parsed.ToString()
+    $build = if ($parsed.Build -lt 0) { 0 } else { $parsed.Build }
+    $rev = if ($parsed.Revision -lt 0) { 0 } else { $parsed.Revision }
+    return "{0}.{1}.{2}.{3}" -f $parsed.Major, $parsed.Minor, $build, $rev
 }
 
 $normalizedVersion = NormalizeVersion -Value $Version
