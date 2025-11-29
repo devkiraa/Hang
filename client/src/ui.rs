@@ -1280,41 +1280,15 @@ impl eframe::App for HangApp {
                             ui.image((texture.id(), draw_size));
                         },
                     );
-                } else {
-                    ui.centered_and_justified(|ui| {
-                        if self.video_file.is_none() {
-                            let card = egui::Frame::group(ui.style())
-                                .fill(egui::Color32::from_rgba_unmultiplied(20, 20, 20, 210))
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
-                                .rounding(egui::Rounding::same(14.0));
-
-                            card.show(ui, |ui| {
-                                ui.set_width(360.0);
-                                ui.vertical_centered(|ui| {
-                                    ui.add_space(6.0);
-                                    ui.heading("Welcome to Hang");
-                                    ui.label("Load a video to host or join a room.");
-                                    ui.add_space(10.0);
-                                    if ui
-                                        .add_sized([220.0, 36.0], egui::Button::new("Open Video"))
-                                        .clicked()
-                                    {
-                                        self.select_video_file();
-                                    }
-                                    ui.label("Tip: You can also drag & drop a file anywhere.");
-                                    let sync_status = if self.sync_connected {
-                                        "Connected"
-                                    } else {
-                                        "Connecting to sync server…"
-                                    };
-                                    ui.label(sync_status);
-                                    ui.add_space(6.0);
-                                });
-                            });
-                        } else {
+                } else if self.video_file.is_some() {
+                    let available = ui.available_size();
+                    ui.allocate_ui_with_layout(
+                        available,
+                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                        |ui| {
                             ui.heading("Loading video...");
-                        }
-                    });
+                        },
+                    );
                 }
             });
 
