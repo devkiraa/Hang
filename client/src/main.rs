@@ -15,8 +15,9 @@ use constants::{LOCAL_WS_URL, RENDER_WS_URL};
 use invite::InviteSignal;
 use player::VideoPlayer;
 use sync::SyncClient;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Duration};
 use ui::HangApp;
+use url::Url;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -32,6 +33,7 @@ async fn main() -> Result<()> {
 
     // Set up invite dispatch channel and IPC listener
     let (invite_tx, invite_rx) = mpsc::unbounded_channel::<InviteSignal>();
+    let (reconnect_tx, reconnect_rx) = mpsc::unbounded_channel::<()>();
     let primary_instance = ipc::start_invite_listener(invite_tx.clone()).await;
 
     if !primary_instance {
@@ -57,42 +59,14 @@ async fn main() -> Result<()> {
     // Connect to sync server, preferring localhost with Render fallback
     let sync_for_connection = Arc::clone(&sync);
     let app_state_for_connection = Arc::clone(&app_state);
-    tokio::spawn(async move {
-        let endpoints = [
-            ("local development", LOCAL_WS_URL),
-            ("Render deployment", RENDER_WS_URL),
-        ];
-
-        for (label, url) in endpoints {
-            let handler_state = Arc::clone(&app_state_for_connection);
-            match sync_for_connection
-                .connect(url, move |msg| {
-                    if let Some(app_arc) = handler_state.lock().as_ref() {
-                        let mut app = app_arc.lock();
-                        app.handle_server_message(msg);
-                    }
-                })
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!("Connected to {label} sync server at {url}");
-                    return;
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to connect to {label} sync server at {url}: {}", e)
-                }
-            }
-        }
-
-        tracing::error!(
-            "Unable to reach either the local server ({}) or Render backend ({}).",
-            LOCAL_WS_URL,
-            RENDER_WS_URL
-        );
-    });
+    tokio::spawn(run_connection_loop(
+        sync_for_connection,
+        app_state_for_connection,
+        reconnect_rx,
+    ));
 
     // Give connection time to establish
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Launch GUI on main thread
     let mut options = eframe::NativeOptions {
@@ -109,13 +83,20 @@ async fn main() -> Result<()> {
     let sync_clone = Arc::clone(&sync);
     let app_state_clone = Arc::clone(&app_state);
     let mut invite_rx = Some(invite_rx);
+    let reconnect_tx_for_ui = reconnect_tx.clone();
 
     eframe::run_native(
         "Hang",
         options,
         Box::new(move |cc| {
             let invites = invite_rx.take().expect("invite receiver already consumed");
-            let app = HangApp::new(cc, player_clone, sync_clone, invites);
+            let app = HangApp::new(
+                cc,
+                Arc::clone(&player_clone),
+                Arc::clone(&sync_clone),
+                invites,
+                reconnect_tx_for_ui.clone(),
+            );
             let app_arc = Arc::new(Mutex::new(app));
             *app_state_clone.lock() = Some(Arc::clone(&app_arc));
 
@@ -154,6 +135,153 @@ impl eframe::App for AppWrapper {
     }
 }
 
+async fn run_connection_loop(
+    sync_client: Arc<SyncClient>,
+    app_state: Arc<Mutex<Option<Arc<Mutex<HangApp>>>>>,
+    mut reconnect_rx: mpsc::UnboundedReceiver<()>,
+) {
+    const ENDPOINTS: [(&str, &str); 2] = [
+        ("local development", LOCAL_WS_URL),
+        ("Render deployment", RENDER_WS_URL),
+    ];
+
+    let mut attempt: u32 = 0;
+
+    'outer: loop {
+        for (label, url) in ENDPOINTS.iter().copied() {
+            attempt += 1;
+            update_connection_status(
+                &app_state,
+                format!("Connecting to {label} sync server (attempt {attempt})..."),
+                Some(false),
+            );
+
+            if label == "Render deployment" {
+                warm_up_backend(&app_state, label, url).await;
+            }
+
+            let handler_state = Arc::clone(&app_state);
+            match sync_client
+                .connect(url, move |msg| {
+                    if let Some(app_arc) = handler_state.lock().as_ref() {
+                        let mut app = app_arc.lock();
+                        app.handle_server_message(msg);
+                    }
+                })
+                .await
+            {
+                Ok(_) => {
+                    tracing::info!("Connected to {label} sync server at {url}");
+                    update_connection_status(
+                        &app_state,
+                        format!("Connected to {label} sync server"),
+                        Some(true),
+                    );
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to connect to {label} sync server at {url}: {}",
+                        e
+                    );
+                    update_connection_status(
+                        &app_state,
+                        format!(
+                            "{label} sync server unavailable ({e}). Retrying with fallback..."
+                        ),
+                        Some(false),
+                    );
+                }
+            }
+
+            let capped_attempt = attempt.min(6);
+            let delay = Duration::from_secs(5 * capped_attempt as u64);
+            let sleep = tokio::time::sleep(delay);
+            tokio::pin!(sleep);
+            tokio::select! {
+                _ = sleep.as_mut() => {},
+                recv = reconnect_rx.recv() => {
+                    if recv.is_none() {
+                        tracing::info!("Reconnect channel closed; stopping connection loop");
+                        return;
+                    }
+                    tracing::info!("Manual reconnect requested; restarting connection attempts");
+                    attempt = 0;
+                    continue 'outer;
+                }
+            }
+        }
+    }
+}
+
+async fn warm_up_backend(
+    app_state: &Arc<Mutex<Option<Arc<Mutex<HangApp>>>>>,
+    label: &str,
+    ws_url: &str,
+) {
+    if let Some(health_url) = health_url_from_ws(ws_url) {
+        update_connection_status(
+            app_state,
+            format!("Warming up {label} backend..."),
+            Some(false),
+        );
+
+        let client = reqwest::Client::new();
+        match client
+            .get(&health_url)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(response) => {
+                tracing::info!(
+                    "Warmup request to {label} backend at {} returned {}",
+                    health_url,
+                    response.status()
+                );
+                update_connection_status(
+                    app_state,
+                    format!(
+                        "{label} backend responded with {}. Attempting WebSocket...",
+                        response.status()
+                    ),
+                    Some(false),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Warmup request to {label} backend at {} failed: {}",
+                    health_url,
+                    e
+                );
+                update_connection_status(
+                    app_state,
+                    format!(
+                        "Warmup attempt for {label} backend failed ({e}). Retrying WebSocket..."
+                    ),
+                    Some(false),
+                );
+            }
+        }
+    }
+}
+
+fn health_url_from_ws(ws_url: &str) -> Option<String> {
+    let parsed = Url::parse(ws_url).ok()?;
+    let scheme = match parsed.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        _ => return None,
+    };
+
+    let mut http = parsed;
+    http.set_scheme(scheme).ok()?;
+    http.set_path("/healthz");
+    http.set_query(None);
+    http.set_fragment(None);
+    Some(http.to_string())
+}
+
 fn hang_icon() -> egui::IconData {
     const W: usize = 32;
     const H: usize = 32;
@@ -186,5 +314,16 @@ fn hang_icon() -> egui::IconData {
         rgba,
         width: W as u32,
         height: H as u32,
+    }
+}
+
+fn update_connection_status(
+    app_state: &Arc<Mutex<Option<Arc<Mutex<HangApp>>>>>,
+    message: String,
+    connected: Option<bool>,
+) {
+    if let Some(app_arc) = app_state.lock().as_ref() {
+        let mut app = app_arc.lock();
+        app.update_sync_status(message, connected);
     }
 }

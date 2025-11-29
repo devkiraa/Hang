@@ -2,7 +2,7 @@ use eframe::egui;
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::mpsc::{error::TryRecvError, UnboundedReceiver};
+use tokio::sync::mpsc::{error::TryRecvError, UnboundedReceiver, UnboundedSender};
 
 use crate::{
     constants::{LOCAL_WS_URL, RENDER_WS_URL},
@@ -62,10 +62,12 @@ pub struct HangApp {
 
     // Sync control
     sync_enabled: bool,
+    sync_connected: bool,
     last_sync_time: Arc<Mutex<std::time::Instant>>,
     invite_rx: Option<UnboundedReceiver<InviteSignal>>,
     pending_invite: Option<InviteLink>,
     invite_modal_open: bool,
+    sync_reconnect_tx: Option<UnboundedSender<()>>,
 
     // Video rendering
     video_texture: Option<egui::TextureHandle>,
@@ -78,6 +80,7 @@ impl HangApp {
         player: Arc<VideoPlayer>,
         sync: Arc<SyncClient>,
         invite_rx: UnboundedReceiver<InviteSignal>,
+        sync_reconnect_tx: UnboundedSender<()>,
     ) -> Self {
         Self {
             player,
@@ -88,7 +91,8 @@ impl HangApp {
             room_id_input: String::new(),
             create_passcode_input: String::new(),
             join_passcode_input: String::new(),
-            status_message: "Select a video file to begin".to_string(),
+            status_message: "Connecting to sync server (Render cold starts can take ~60s)..."
+                .to_string(),
             error_message: None,
             is_playing: false,
             current_position: 0.0,
@@ -111,12 +115,21 @@ impl HangApp {
             selected_audio: -1,
             selected_subtitle: -1,
             sync_enabled: true,
+            sync_connected: false,
             last_sync_time: Arc::new(Mutex::new(std::time::Instant::now())),
             invite_rx: Some(invite_rx),
             pending_invite: None,
             invite_modal_open: false,
+            sync_reconnect_tx: Some(sync_reconnect_tx),
             video_texture: None,
             last_frame_size: None,
+        }
+    }
+
+    pub fn update_sync_status<S: Into<String>>(&mut self, message: S, connected: Option<bool>) {
+        self.status_message = message.into();
+        if let Some(flag) = connected {
+            self.sync_connected = flag;
         }
     }
 
@@ -212,6 +225,14 @@ impl HangApp {
         }
     }
 
+    fn request_manual_reconnect(&mut self) {
+        if let Some(tx) = self.sync_reconnect_tx.as_ref() {
+            let _ = tx.send(());
+            self.sync_connected = false;
+            self.status_message = "Retrying sync connection...".into();
+        }
+    }
+
     fn process_invite_signal(&mut self, signal: InviteSignal) {
         match invite::parse_invite_url(&signal.url) {
             Some(link) => {
@@ -245,6 +266,13 @@ impl HangApp {
     }
 
     fn create_room(&mut self) {
+        if !self.sync_connected {
+            self.error_message = Some(
+                "Still connecting to the sync server. Please wait for the warm-up and try again."
+                    .into(),
+            );
+            return;
+        }
         if let Some(hash) = &self.video_hash {
             let passcode = Self::normalize_passcode(&self.create_passcode_input);
             self.pending_room_passcode = passcode.clone();
@@ -257,6 +285,13 @@ impl HangApp {
     }
 
     fn join_room(&mut self) {
+        if !self.sync_connected {
+            self.error_message = Some(
+                "Cannot join until the sync server connection is ready. Render cold-starts may take ~1 minute."
+                    .into(),
+            );
+            return;
+        }
         let code = self.room_id_input.trim().to_string();
         if self.video_hash.is_none() {
             self.error_message = Some("Load the same video before joining a room".into());
@@ -658,11 +693,18 @@ impl HangApp {
                     ));
                 } else {
                     ui.label("Create a room to get a sharable 6-digit code.");
+                    let can_create = self.video_hash.is_some() && self.sync_connected;
                     if ui
-                        .add_enabled(self.video_hash.is_some(), egui::Button::new("Create Room"))
+                        .add_enabled(can_create, egui::Button::new("Create Room"))
                         .clicked()
                     {
                         create_room_requested = true;
+                    }
+                    if !self.sync_connected {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_YELLOW,
+                            "Waiting for sync server (cold starts on Render can take up to a minute)...",
+                        );
                     }
                     ui.label("Optional passcode:");
                     ui.add(
@@ -684,10 +726,8 @@ impl HangApp {
                             .hint_text("Provided by the host"),
                     );
                     ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(self.video_hash.is_some(), egui::Button::new("Join"))
-                            .clicked()
-                        {
+                        let can_join = self.video_hash.is_some() && self.sync_connected;
+                        if ui.add_enabled(can_join, egui::Button::new("Join")).clicked() {
                             join_room_requested = true;
                         }
                         ui.label("Format: 123-456");
@@ -918,6 +958,11 @@ impl eframe::App for HangApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(&self.status_message);
+                        if !self.sync_connected {
+                            if ui.button("Retry Connection").clicked() {
+                                self.request_manual_reconnect();
+                            }
+                        }
                     });
                 });
             });
@@ -1012,7 +1057,9 @@ impl eframe::App for HangApp {
                 }
 
                 ui.add_space(4.0);
-                ui.small("Keys: Space toggles playback · ←/→ seek 5s · ↑/↓ volume · F fullscreen");
+                ui.small(
+                    "Keys: Space toggles playback · ←/→ seek 5s · ↑/↓ volume · F fullscreen",
+                );
             });
         }
 
