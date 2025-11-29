@@ -42,7 +42,7 @@ jobs:
       - name: Prepare executable
         run: |
           $name = "Hang ${{ inputs.version }}.exe"
-          Copy-Item -Path client\target\release\hang-client.exe -Destination "$name" -Force
+          Copy-Item -Path target\release\hang-client.exe -Destination "$name" -Force
           echo "ASSET_NAME=$name" | Out-File -FilePath $Env:GITHUB_ENV -Append
 
       - name: Upload release asset
