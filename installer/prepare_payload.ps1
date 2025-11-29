@@ -5,7 +5,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Version,
 
-    [string]$VlcVersion = "3.0.20"
+    [string]$VlcVersion = "3.0.20",
+
+    [switch]$MinimalRuntime
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +67,39 @@ foreach ($license in $licenseFiles) {
     $licensePath = Join-Path $vlcRoot.FullName $license
     if (Test-Path $licensePath) {
         Copy-Item -Path $licensePath -Destination (Join-Path $runtimeDir $license) -Force
+    }
+}
+
+if ($MinimalRuntime) {
+    Write-Host "Pruning optional VLC assets for smaller payload..."
+
+    $localeDir = Join-Path $runtimeDir 'locale'
+    if (Test-Path $localeDir) {
+        Remove-Item -Path $localeDir -Recurse -Force
+    }
+
+    $pluginDir = Join-Path $runtimeDir 'plugins'
+    if (Test-Path $pluginDir) {
+        $prunePluginDirs = @(
+            'access_output',
+            'control',
+            'gui',
+            'logger',
+            'misc',
+            'services_discovery',
+            'stream_extractor',
+            'stream_filter',
+            'stream_out',
+            'video_splitter',
+            'visualization'
+        )
+
+        foreach ($dir in $prunePluginDirs) {
+            $target = Join-Path $pluginDir $dir
+            if (Test-Path $target) {
+                Remove-Item -Path $target -Recurse -Force
+            }
+        }
     }
 }
 

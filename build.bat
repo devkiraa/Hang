@@ -27,7 +27,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -File installer\prepare_payload.ps1 -Payload "%PAYLOAD_DIR%" -Version "%VERSION%"
+powershell -NoProfile -ExecutionPolicy Bypass -File installer\prepare_payload.ps1 -PayloadDir "%PAYLOAD_DIR%" -Version "%VERSION%" -MinimalRuntime
 if %errorlevel% neq 0 (
     echo Failed to prepare payload!
     exit /b 1
