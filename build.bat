@@ -42,7 +42,7 @@ if %errorlevel% neq 0 (
 echo Packaging MSI: %MSI_NAME%
 where candle.exe >nul 2>&1
 if %errorlevel% neq 0 (
-    echo WiX Toolset (candle.exe/light.exe) not found. Skipping MSI packaging.
+    echo WiX Toolset ^(candle.exe/light.exe^) not found. Skipping MSI packaging.
     goto finish
 )
 
@@ -52,8 +52,20 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 set "MSI_BUILT=1"
+call :cleanup_export
 
 goto finish
+
+:cleanup_export
+echo Cleaning export folder...
+for %%F in ("Hang-client-test.msi" "Hang-client-test.wixpdb") do (
+    if exist "%EXPORT_DIR%\%%~F" del /f /q "%EXPORT_DIR%\%%~F"
+)
+for %%D in ("payload" "cache") do (
+    if exist "%EXPORT_DIR%\%%~D" rd /s /q "%EXPORT_DIR%\%%~D"
+)
+echo Export folder cleaned. Retained latest build artifacts.
+goto :eof
 
 :finish
 echo.
