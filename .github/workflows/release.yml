@@ -48,7 +48,7 @@ jobs:
           echo "ASSET_EXE=$name" | Out-File -FilePath $Env:GITHUB_ENV -Append
 
       - name: Install WiX Toolset
-        run: choco install wix --version 3.11.2 -y
+        run: choco install wixtoolset -y
 
       - name: Build MSI installer
         shell: pwsh
