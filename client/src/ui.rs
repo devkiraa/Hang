@@ -69,6 +69,7 @@ pub struct HangApp {
     saved_session: Option<PersistedSession>,
     auto_resume_attempted: bool,
     resume_in_progress: bool,
+    show_about: bool,
 
     // Video rendering
     video_texture: Option<egui::TextureHandle>,
@@ -92,8 +93,7 @@ impl HangApp {
             room_id_input: String::new(),
             create_passcode_input: String::new(),
             join_passcode_input: String::new(),
-            status_message: "Connecting to sync server (Render cold starts can take ~60s)..."
-                .to_string(),
+            status_message: "Connecting to sync server (may take up to a minute)...".to_string(),
             error_message: None,
             is_playing: false,
             current_position: 0.0,
@@ -125,6 +125,7 @@ impl HangApp {
             saved_session: cached_session,
             auto_resume_attempted: false,
             resume_in_progress: false,
+            show_about: false,
             video_texture: None,
             last_frame_size: None,
         }
@@ -722,6 +723,7 @@ impl HangApp {
         egui::Window::new("Room Controls")
             .open(&mut dialog_open)
             .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
                 if let Some(code) = self.current_room_id.clone() {
                     ui.label(format!("Current room: {}", code));
@@ -990,22 +992,6 @@ impl HangApp {
         });
     }
 
-    fn draw_logo(&self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("▣")
-                    .font(egui::FontId::proportional(22.0))
-                    .color(egui::Color32::from_rgb(255, 145, 0)),
-            );
-            ui.add_space(6.0);
-            ui.label(
-                egui::RichText::new("Hang")
-                    .font(egui::FontId::proportional(20.0))
-                    .color(egui::Color32::WHITE),
-            );
-        });
-    }
-
     fn update_control_visibility(&mut self, ctx: &egui::Context) {
         if !self.is_fullscreen {
             self.controls_visible = true;
@@ -1042,7 +1028,11 @@ impl eframe::App for HangApp {
         if show_chrome {
             egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
                 egui::menu::bar(ui, |ui| {
-                    self.draw_logo(ui);
+                    ui.label(
+                        egui::RichText::new("Hang")
+                            .font(egui::FontId::proportional(20.0))
+                            .color(egui::Color32::WHITE),
+                    );
                     ui.separator();
 
                     if ui.button("Open Video").clicked() {
@@ -1057,8 +1047,25 @@ impl eframe::App for HangApp {
                         self.room_dialog_open = true;
                     }
 
+                    if ui.button("About").clicked() {
+                        self.show_about = true;
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(&self.status_message);
+                        let connection_label = if self.sync_connected {
+                            "Connected"
+                        } else {
+                            "Connecting…"
+                        };
+                        let label = ui.label(egui::RichText::new(connection_label).color(
+                            if self.sync_connected {
+                                egui::Color32::from_rgb(120, 255, 120)
+                            } else {
+                                egui::Color32::YELLOW
+                            },
+                        ));
+                        label.on_hover_text(&self.status_message);
+
                         if !self.sync_connected {
                             if ui.button("Retry Connection").clicked() {
                                 self.request_manual_reconnect();
@@ -1176,6 +1183,7 @@ impl eframe::App for HangApp {
         if self.show_settings {
             egui::Window::new("Settings")
                 .open(&mut self.show_settings)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.heading("Audio Tracks");
                     for track in &self.audio_tracks {
@@ -1216,10 +1224,40 @@ impl eframe::App for HangApp {
                 });
         }
 
+        if self.show_about {
+            let mut about_open = self.show_about;
+            let mut close_requested = false;
+            egui::Window::new("About Hang")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .open(&mut about_open)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.heading("Hang");
+                        ui.label("Watch your local videos in sync with friends.");
+                        ui.separator();
+                        let status = if self.sync_connected {
+                            "Connected"
+                        } else {
+                            "Connecting…"
+                        };
+                        ui.label(format!("Sync status: {}", status));
+                        ui.label(format!("Last event: {}", self.status_message));
+                        ui.add_space(8.0);
+                        if ui.button("Close").clicked() {
+                            close_requested = true;
+                        }
+                    });
+                });
+            self.show_about = about_open && !close_requested;
+        }
+
         // Error notification
         if let Some(error) = self.error_message.clone() {
             egui::Window::new("Error")
                 .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.colored_label(egui::Color32::RED, &error);
                     if ui.button("OK").clicked() {
@@ -1245,14 +1283,34 @@ impl eframe::App for HangApp {
                 } else {
                     ui.centered_and_justified(|ui| {
                         if self.video_file.is_none() {
-                            self.draw_logo(ui);
-                            ui.add_space(8.0);
-                            ui.label("Open a video file to begin");
-                            ui.add_space(10.0);
-                            if ui.button("Open Video").clicked() {
-                                self.select_video_file();
-                            }
-                            ui.label("…or drag & drop a file anywhere in this window");
+                            let card = egui::Frame::group(ui.style())
+                                .fill(egui::Color32::from_rgba_unmultiplied(20, 20, 20, 210))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                                .rounding(egui::Rounding::same(14.0));
+
+                            card.show(ui, |ui| {
+                                ui.set_width(360.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(6.0);
+                                    ui.heading("Welcome to Hang");
+                                    ui.label("Load a video to host or join a room.");
+                                    ui.add_space(10.0);
+                                    if ui
+                                        .add_sized([220.0, 36.0], egui::Button::new("Open Video"))
+                                        .clicked()
+                                    {
+                                        self.select_video_file();
+                                    }
+                                    ui.label("Tip: You can also drag & drop a file anywhere.");
+                                    let sync_status = if self.sync_connected {
+                                        "Connected"
+                                    } else {
+                                        "Connecting to sync server…"
+                                    };
+                                    ui.label(sync_status);
+                                    ui.add_space(6.0);
+                                });
+                            });
                         } else {
                             ui.heading("Loading video...");
                         }

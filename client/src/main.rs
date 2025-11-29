@@ -293,27 +293,30 @@ fn health_url_from_ws(ws_url: &str) -> Option<String> {
 fn hang_icon() -> egui::IconData {
     const W: usize = 32;
     const H: usize = 32;
-    let top = [255.0, 138.0, 0.0];
-    let bottom = [255.0, 108.0, 0.0];
+    let background = [255u8, 138, 0, 255];
+    let triangle = [(11.0f32, 10.0f32), (23.0, 16.0), (11.0, 22.0)];
     let mut rgba = Vec::with_capacity(W * H * 4);
 
-    for y in 0..H {
-        let t = y as f32 / (H.saturating_sub(1)) as f32;
-        let base = [
-            (top[0] + (bottom[0] - top[0]) * t) as u8,
-            (top[1] + (bottom[1] - top[1]) * t) as u8,
-            (top[2] + (bottom[2] - top[2]) * t) as u8,
-            255,
-        ];
+    let sign = |p1: (f32, f32), p2: (f32, f32), p3: (f32, f32)| {
+        (p1.0 - p3.0) * (p2.1 - p3.1) - (p2.0 - p3.0) * (p1.1 - p3.1)
+    };
+    let contains = |px: f32, py: f32| {
+        let pt = (px, py);
+        let b1 = sign(pt, triangle[0], triangle[1]) < 0.0;
+        let b2 = sign(pt, triangle[1], triangle[2]) < 0.0;
+        let b3 = sign(pt, triangle[2], triangle[0]) < 0.0;
+        (b1 == b2) && (b2 == b3)
+    };
 
+    for y in 0..H {
         for x in 0..W {
-            let mut color = base;
-            let in_left_bar = (7..=11).contains(&x);
-            let in_right_bar = (20..=24).contains(&x);
-            let in_cross_bar = (11..=21).contains(&x) && (13..=19).contains(&y);
-            if in_left_bar || in_right_bar || in_cross_bar {
-                color = [255, 255, 255, 255];
-            }
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let color = if contains(px, py) {
+                [0, 0, 0, 255]
+            } else {
+                background
+            };
             rgba.extend_from_slice(&color);
         }
     }
