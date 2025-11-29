@@ -6,7 +6,7 @@ build = "build.rs"
 
 [dependencies]
 tokio = { workspace = true }
-tokio-tungstenite = "0.28"
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
