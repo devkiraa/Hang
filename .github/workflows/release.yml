@@ -2,6 +2,16 @@ name: Release Hang Client
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g. v1.2.3)"
+        required: true
+      title:
+        description: "Release title"
+        required: true
+      notes:
+        description: "Release description / changelog"
+        required: true
 
 permissions:
   contents: write
@@ -35,4 +45,7 @@ jobs:
       - name: Upload release asset
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.title }}
+          body: ${{ inputs.notes }}
           files: Hang.exe
