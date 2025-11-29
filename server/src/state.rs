@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -25,11 +26,20 @@ impl ServerState {
         }
     }
 
-    pub fn create_room(&self, host_id: Uuid, file_hash: String) -> String {
+    pub fn create_room(
+        &self,
+        host_id: Uuid,
+        file_hash: String,
+        passcode: Option<String>,
+    ) -> (String, bool) {
         let room_id = self.generate_room_code();
+        let passcode_hash = passcode
+            .filter(|code| !code.is_empty())
+            .map(|code| Self::hash_passcode(&code, &room_id));
         let room = Room {
             host_id,
             file_hash: file_hash.clone(),
+            passcode_hash: passcode_hash.clone(),
         };
 
         self.rooms.insert(room_id.clone(), room);
@@ -42,7 +52,7 @@ impl ServerState {
         }
 
         tracing::info!("Room {} created by client {}", room_id, host_id);
-        room_id
+        (room_id, passcode_hash.is_some())
     }
 
     pub async fn join_room(
@@ -50,6 +60,7 @@ impl ServerState {
         client_id: Uuid,
         room_id: &str,
         file_hash: &str,
+        passcode: Option<String>,
     ) -> Result<bool, String> {
         // Check if room exists
         let room = self
@@ -60,6 +71,17 @@ impl ServerState {
         // Verify file hash matches
         if room.file_hash != file_hash {
             return Err("File hash mismatch".to_string());
+        }
+
+        if let Some(expected) = &room.passcode_hash {
+            let provided = passcode
+                .as_ref()
+                .filter(|code| !code.is_empty())
+                .ok_or_else(|| "Passcode required".to_string())?;
+            let computed = Self::hash_passcode(provided, room_id);
+            if &computed != expected {
+                return Err("Invalid passcode".to_string());
+            }
         }
 
         let is_host = room.host_id == client_id;
@@ -143,5 +165,13 @@ impl ServerState {
                 break code;
             }
         }
+    }
+
+    fn hash_passcode(passcode: &str, room_id: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(room_id.as_bytes());
+        hasher.update(passcode.as_bytes());
+        let digest = hasher.finalize();
+        format!("{:x}", digest)
     }
 }

@@ -64,13 +64,25 @@ impl SyncClient {
     }
 
     /// Create a new room
-    pub fn create_room(&self, file_hash: String) -> Result<()> {
-        self.send_message(Message::CreateRoom { file_hash })
+    pub fn create_room(&self, file_hash: String, passcode: Option<String>) -> Result<()> {
+        self.send_message(Message::CreateRoom {
+            file_hash,
+            passcode,
+        })
     }
 
     /// Join an existing room
-    pub fn join_room(&self, room_id: String, file_hash: String) -> Result<()> {
-        self.send_message(Message::JoinRoom { room_id, file_hash })
+    pub fn join_room(
+        &self,
+        room_id: String,
+        file_hash: String,
+        passcode: Option<String>,
+    ) -> Result<()> {
+        self.send_message(Message::JoinRoom {
+            room_id,
+            file_hash,
+            passcode,
+        })
     }
 
     /// Leave current room

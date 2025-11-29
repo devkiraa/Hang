@@ -2,9 +2,11 @@ use eframe::egui;
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::sync::mpsc::{error::TryRecvError, UnboundedReceiver};
 
 use crate::{
     constants::{LOCAL_WS_URL, RENDER_WS_URL},
+    invite::{self, InviteLink, InviteSignal},
     player::{VideoFrame, VideoPlayer},
     protocol::{Message, SyncCommand},
     sync::SyncClient,
@@ -25,6 +27,8 @@ pub struct HangApp {
     video_hash: Option<String>,
     server_url: String,
     room_id_input: String,
+    create_passcode_input: String,
+    join_passcode_input: String,
     status_message: String,
     error_message: Option<String>,
 
@@ -43,6 +47,9 @@ pub struct HangApp {
     room_dialog_open: bool,
     is_fullscreen: bool,
     controls_visible: bool,
+    active_room_passcode: Option<String>,
+    pending_room_passcode: Option<String>,
+    room_has_passcode: bool,
 
     // Settings panel
     show_settings: bool,
@@ -54,6 +61,9 @@ pub struct HangApp {
     // Sync control
     sync_enabled: bool,
     last_sync_time: Arc<Mutex<std::time::Instant>>,
+    invite_rx: Option<UnboundedReceiver<InviteSignal>>,
+    pending_invite: Option<InviteLink>,
+    invite_modal_open: bool,
 
     // Video rendering
     video_texture: Option<egui::TextureHandle>,
@@ -65,6 +75,7 @@ impl HangApp {
         _cc: &eframe::CreationContext,
         player: Arc<VideoPlayer>,
         sync: Arc<SyncClient>,
+        invite_rx: UnboundedReceiver<InviteSignal>,
     ) -> Self {
         Self {
             player,
@@ -73,6 +84,8 @@ impl HangApp {
             video_hash: None,
             server_url: LOCAL_WS_URL.to_string(),
             room_id_input: String::new(),
+            create_passcode_input: String::new(),
+            join_passcode_input: String::new(),
             status_message: "Select a video file to begin".to_string(),
             error_message: None,
             is_playing: false,
@@ -87,6 +100,9 @@ impl HangApp {
             room_dialog_open: false,
             is_fullscreen: false,
             controls_visible: true,
+            active_room_passcode: None,
+            pending_room_passcode: None,
+            room_has_passcode: false,
             show_settings: false,
             audio_tracks: Vec::new(),
             subtitle_tracks: Vec::new(),
@@ -94,6 +110,9 @@ impl HangApp {
             selected_subtitle: -1,
             sync_enabled: true,
             last_sync_time: Arc::new(Mutex::new(std::time::Instant::now())),
+            invite_rx: Some(invite_rx),
+            pending_invite: None,
+            invite_modal_open: false,
             video_texture: None,
             last_frame_size: None,
         }
@@ -138,6 +157,15 @@ impl HangApp {
             .unwrap_or(false)
     }
 
+    fn normalize_passcode(input: &str) -> Option<String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
     fn update_playback_state(&mut self) {
         if let Ok(pos) = self.player.get_position() {
             self.current_position = pos;
@@ -158,6 +186,51 @@ impl HangApp {
         }
     }
 
+    fn poll_invite_channel(&mut self) {
+        loop {
+            let result = {
+                let Some(rx) = self.invite_rx.as_mut() else {
+                    return;
+                };
+                match rx.try_recv() {
+                    Ok(signal) => Ok(Some(signal)),
+                    Err(TryRecvError::Empty) => Ok(None),
+                    Err(TryRecvError::Disconnected) => Err(()),
+                }
+            };
+
+            match result {
+                Ok(Some(signal)) => self.process_invite_signal(signal),
+                Ok(None) => break,
+                Err(()) => {
+                    self.invite_rx = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    fn process_invite_signal(&mut self, signal: InviteSignal) {
+        match invite::parse_invite_url(&signal.url) {
+            Some(link) => {
+                self.room_id_input = link.room_id.clone();
+                self.sanitize_room_code_input();
+                if let Some(passcode) = &link.passcode {
+                    self.join_passcode_input = passcode.clone();
+                } else {
+                    self.join_passcode_input.clear();
+                }
+                self.pending_invite = Some(link);
+                self.invite_modal_open = true;
+                self.room_dialog_open = true;
+                self.status_message = "Invite received".to_string();
+            }
+            None => {
+                self.error_message = Some("Invalid invite link".to_string());
+            }
+        }
+    }
+
     fn select_video_file(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Video Files", VIDEO_EXTENSIONS)
@@ -171,7 +244,9 @@ impl HangApp {
 
     fn create_room(&mut self) {
         if let Some(hash) = &self.video_hash {
-            if let Err(e) = self.sync.create_room(hash.clone()) {
+            let passcode = Self::normalize_passcode(&self.create_passcode_input);
+            self.pending_room_passcode = passcode.clone();
+            if let Err(e) = self.sync.create_room(hash.clone(), passcode) {
                 self.error_message = Some(format!("Failed to create room: {}", e));
             } else {
                 self.status_message = "Creating room...".to_string();
@@ -192,7 +267,12 @@ impl HangApp {
         }
 
         if let Some(hash) = &self.video_hash {
-            if let Err(e) = self.sync.join_room(code.clone(), hash.clone()) {
+            let passcode = Self::normalize_passcode(&self.join_passcode_input);
+            self.pending_room_passcode = passcode.clone();
+            if let Err(e) = self
+                .sync
+                .join_room(code.clone(), hash.clone(), passcode.clone())
+            {
                 self.error_message = Some(format!("Failed to join room: {}", e));
             } else {
                 self.status_message = format!("Joining room {}...", code);
@@ -261,7 +341,11 @@ impl HangApp {
 
     pub fn handle_server_message(&mut self, msg: Message) {
         match msg {
-            Message::RoomCreated { room_id, client_id } => {
+            Message::RoomCreated {
+                room_id,
+                client_id,
+                passcode_enabled,
+            } => {
                 self.sync.set_room_joined(room_id.clone(), client_id, true);
                 self.in_room = true;
                 self.current_room_id = Some(room_id.clone());
@@ -269,11 +353,24 @@ impl HangApp {
                 self.participant_count = 1;
                 self.status_message = format!("Room created: {}", room_id);
                 self.room_id_input = room_id;
+                self.invite_modal_open = false;
+                self.pending_invite = None;
+                self.room_has_passcode = passcode_enabled;
+                self.active_room_passcode = if passcode_enabled {
+                    self.pending_room_passcode.clone()
+                } else {
+                    None
+                };
+                self.pending_room_passcode = None;
+                if passcode_enabled {
+                    self.create_passcode_input.clear();
+                }
             }
             Message::RoomJoined {
                 room_id,
                 client_id,
                 is_host,
+                passcode_enabled,
             } => {
                 self.sync
                     .set_room_joined(room_id.clone(), client_id, is_host);
@@ -286,6 +383,18 @@ impl HangApp {
                     room_id,
                     if is_host { "Host" } else { "Guest" }
                 );
+                self.invite_modal_open = false;
+                self.pending_invite = None;
+                self.room_has_passcode = passcode_enabled;
+                self.active_room_passcode = if passcode_enabled {
+                    self.pending_room_passcode.clone()
+                } else {
+                    None
+                };
+                self.pending_room_passcode = None;
+                if !is_host {
+                    self.join_passcode_input.clear();
+                }
             }
             Message::RoomLeft => {
                 self.sync.clear_room();
@@ -294,6 +403,11 @@ impl HangApp {
                 self.is_host = false;
                 self.participant_count = 0;
                 self.status_message = "Left room".to_string();
+                self.room_has_passcode = false;
+                self.active_room_passcode = None;
+                self.pending_room_passcode = None;
+                self.pending_invite = None;
+                self.invite_modal_open = false;
             }
             Message::RoomNotFound => {
                 self.error_message = Some("Room not found".to_string());
@@ -453,6 +567,36 @@ impl HangApp {
                             leave_room_requested = true;
                         }
                     });
+                    if self.is_host {
+                        ui.horizontal(|ui| {
+                            if ui.button("Copy invite link").clicked() {
+                                let file_name = self
+                                    .video_file
+                                    .as_ref()
+                                    .and_then(|path| path.file_name())
+                                    .and_then(|name| name.to_str());
+                                let link = invite::build_invite_url(
+                                    &code,
+                                    self.active_room_passcode.as_deref(),
+                                    file_name,
+                                );
+                                ui.output_mut(|o| o.copied_text = link);
+                                self.status_message = "Invite link copied".to_string();
+                            }
+                            if let Some(passcode) = &self.active_room_passcode {
+                                ui.monospace(format!("Passcode: {}", passcode));
+                            } else if self.room_has_passcode {
+                                ui.label("Passcode protected");
+                            } else {
+                                ui.label("No passcode set");
+                            }
+                        });
+                    } else if self.room_has_passcode {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_YELLOW,
+                            "Passcode required to rejoin",
+                        );
+                    }
                     ui.separator();
                     ui.checkbox(&mut self.sync_enabled, "Enable sync");
                     ui.label(format!(
@@ -467,6 +611,12 @@ impl HangApp {
                     {
                         create_room_requested = true;
                     }
+                    ui.label("Optional passcode:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.create_passcode_input)
+                            .password(true)
+                            .hint_text("Leave blank for none"),
+                    );
 
                     ui.separator();
                     ui.label("Join an existing room:");
@@ -474,6 +624,12 @@ impl HangApp {
                     if response.changed() {
                         self.sanitize_room_code_input();
                     }
+                    ui.label("Passcode (if needed):");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.join_passcode_input)
+                            .password(true)
+                            .hint_text("Provided by the host"),
+                    );
                     ui.horizontal(|ui| {
                         if ui
                             .add_enabled(self.video_hash.is_some(), egui::Button::new("Join"))
@@ -511,6 +667,90 @@ impl HangApp {
         }
 
         self.room_dialog_open = dialog_open;
+    }
+
+    fn render_invite_modal(&mut self, ctx: &egui::Context) {
+        if !self.invite_modal_open {
+            return;
+        }
+
+        let Some(invite) = self.pending_invite.as_ref() else {
+            self.invite_modal_open = false;
+            return;
+        };
+
+        let mut modal_open = self.invite_modal_open;
+        let mut open_file_requested = false;
+        let mut join_requested = false;
+        let mut dismiss_requested = false;
+
+        egui::Window::new("Room Invite")
+            .open(&mut modal_open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.heading(format!("Join room {}", invite.room_id));
+                if let Some(file) = &invite.file_name {
+                    ui.label(format!("Expected file: {}", file));
+                } else {
+                    ui.label("Host did not specify a file name");
+                }
+
+                if let Some(passcode) = &invite.passcode {
+                    ui.label(format!("Passcode: {}", passcode));
+                } else {
+                    ui.label("No passcode included");
+                }
+
+                ui.separator();
+
+                if let Some(path) = &self.video_file {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        ui.label(format!("Loaded video: {}", name));
+                    }
+                } else {
+                    ui.colored_label(
+                        egui::Color32::LIGHT_RED,
+                        "Load the shared video before joining",
+                    );
+                }
+
+                ui.add_space(6.0);
+
+                if ui.button("Open Video…").clicked() {
+                    open_file_requested = true;
+                }
+
+                let join_enabled = self.video_hash.is_some();
+                if ui
+                    .add_enabled(join_enabled, egui::Button::new("Join Room"))
+                    .clicked()
+                {
+                    join_requested = true;
+                }
+
+                if !join_enabled {
+                    ui.small("Load the matching video to enable joining");
+                }
+
+                if ui.button("Dismiss").clicked() {
+                    dismiss_requested = true;
+                }
+            });
+
+        if dismiss_requested || !modal_open {
+            self.invite_modal_open = false;
+            self.pending_invite = None;
+        }
+
+        if open_file_requested {
+            self.select_video_file();
+        }
+
+        if join_requested {
+            self.join_room();
+        }
     }
 
     fn sanitize_room_code_input(&mut self) {
@@ -595,6 +835,7 @@ impl eframe::App for HangApp {
         self.update_playback_state();
         self.update_video_texture(ctx);
         self.handle_file_drop(ctx);
+        self.poll_invite_channel();
         if self.is_fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.is_fullscreen = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -629,6 +870,7 @@ impl eframe::App for HangApp {
         }
 
         self.render_room_dialog(ctx);
+        self.render_invite_modal(ctx);
 
         // Bottom control panel
         if show_chrome {

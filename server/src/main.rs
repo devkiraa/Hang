@@ -147,23 +147,39 @@ async fn handle_message(
     let msg: Message = serde_json::from_str(text)?;
 
     match msg {
-        Message::CreateRoom { file_hash } => {
-            let room_id = state.create_room(client_id, file_hash);
+        Message::CreateRoom {
+            file_hash,
+            passcode,
+        } => {
+            let (room_id, passcode_enabled) = state.create_room(client_id, file_hash, passcode);
             if let Some(tx) = client_senders.read().await.get(&client_id) {
                 let _ = tx.send(Message::RoomCreated {
                     room_id: room_id.clone(),
                     client_id,
+                    passcode_enabled,
                 });
             }
             broadcast_member_count(&state, client_senders, &room_id).await;
         }
 
-        Message::JoinRoom { room_id, file_hash } => {
-            let response = match state.join_room(client_id, &room_id, &file_hash).await {
+        Message::JoinRoom {
+            room_id,
+            file_hash,
+            passcode,
+        } => {
+            let response = match state
+                .join_room(client_id, &room_id, &file_hash, passcode)
+                .await
+            {
                 Ok(is_host) => Message::RoomJoined {
                     room_id: room_id.clone(),
                     client_id,
                     is_host,
+                    passcode_enabled: state
+                        .rooms
+                        .get(&room_id)
+                        .map(|room| room.passcode_hash.is_some())
+                        .unwrap_or(false),
                 },
                 Err(e) if e.contains("not found") => Message::RoomNotFound,
                 Err(e) if e.contains("mismatch") => {

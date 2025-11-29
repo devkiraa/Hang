@@ -8,10 +8,12 @@ pub enum Message {
     // Client -> Server
     CreateRoom {
         file_hash: String,
+        passcode: Option<String>,
     },
     JoinRoom {
         room_id: String,
         file_hash: String,
+        passcode: Option<String>,
     },
     LeaveRoom,
     SyncCommand(SyncCommand),
@@ -20,11 +22,13 @@ pub enum Message {
     RoomCreated {
         room_id: String,
         client_id: Uuid,
+        passcode_enabled: bool,
     },
     RoomJoined {
         room_id: String,
         client_id: Uuid,
         is_host: bool,
+        passcode_enabled: bool,
     },
     RoomLeft,
     RoomNotFound,
@@ -60,6 +64,7 @@ pub enum SyncCommand {
 pub struct Room {
     pub host_id: Uuid,
     pub file_hash: String,
+    pub passcode_hash: Option<String>,
 }
 
 /// Client connection metadata

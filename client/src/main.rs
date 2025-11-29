@@ -1,4 +1,6 @@
 mod constants;
+mod invite;
+mod ipc;
 mod player;
 mod protocol;
 mod sync;
@@ -10,8 +12,10 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 use constants::{LOCAL_WS_URL, RENDER_WS_URL};
+use invite::InviteSignal;
 use player::VideoPlayer;
 use sync::SyncClient;
+use tokio::sync::mpsc;
 use ui::HangApp;
 
 #[tokio::main]
@@ -22,6 +26,24 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| "hang_client=debug,info".into()),
         )
         .init();
+
+    // Parse invite argument if present
+    let invite_arg = extract_invite_argument();
+
+    // Set up invite dispatch channel and IPC listener
+    let (invite_tx, invite_rx) = mpsc::unbounded_channel::<InviteSignal>();
+    let primary_instance = ipc::start_invite_listener(invite_tx.clone()).await;
+
+    if !primary_instance {
+        if let Some(url) = invite_arg {
+            let _ = ipc::send_invite_to_primary(InviteSignal { url }).await;
+        }
+        return Ok(());
+    }
+
+    if let Some(url) = invite_arg {
+        let _ = invite_tx.send(InviteSignal { url });
+    }
 
     // Initialize video player
     let player = Arc::new(VideoPlayer::new(None).map_err(|e| anyhow::anyhow!(e))?);
@@ -86,12 +108,14 @@ async fn main() -> Result<()> {
     let player_clone = Arc::clone(&player);
     let sync_clone = Arc::clone(&sync);
     let app_state_clone = Arc::clone(&app_state);
+    let mut invite_rx = Some(invite_rx);
 
     eframe::run_native(
         "Hang",
         options,
         Box::new(move |cc| {
-            let app = HangApp::new(cc, player_clone, sync_clone);
+            let invites = invite_rx.take().expect("invite receiver already consumed");
+            let app = HangApp::new(cc, player_clone, sync_clone, invites);
             let app_arc = Arc::new(Mutex::new(app));
             *app_state_clone.lock() = Some(Arc::clone(&app_arc));
 
@@ -101,6 +125,22 @@ async fn main() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("eframe error: {}", e))?;
 
     Ok(())
+}
+
+fn extract_invite_argument() -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    let mut invite = None;
+    while let Some(arg) = args.next() {
+        if arg == "--invite-url" {
+            invite = args.next();
+        } else if arg.starts_with("hang://")
+            || arg.starts_with("http://")
+            || arg.starts_with("https://")
+        {
+            invite = Some(arg);
+        }
+    }
+    invite
 }
 
 // Wrapper to make Arc<Mutex<HangApp>> work with eframe::App
