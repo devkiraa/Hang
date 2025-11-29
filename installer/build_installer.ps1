@@ -86,9 +86,10 @@ $heat = (Get-Command heat.exe).Path
 & $heat dir $runtimeDir -cg VlcRuntimeGroup -dr VlcInstallDir -srd -gg -var var.RuntimeSourceDir -out $heatFragment
 
 try {
-    & $candle -arch x64 -dRuntimeSourceDir=$runtimeDir -out $mainObj $wxsGenerated
-    & $candle -arch x64 -dRuntimeSourceDir=$runtimeDir -out $runtimeObj $heatFragment
-    & $light -dRuntimeSourceDir=$runtimeDir $mainObj $runtimeObj -o $outputPath
+    $runtimeDefine = "-dRuntimeSourceDir=$runtimeDir"
+    & $candle -arch x64 $runtimeDefine -out $mainObj $wxsGenerated
+    & $candle -arch x64 $runtimeDefine -out $runtimeObj $heatFragment
+    & $light $runtimeDefine $mainObj $runtimeObj -o $outputPath
 }
 finally {
     if (Test-Path $wxsGenerated) {
