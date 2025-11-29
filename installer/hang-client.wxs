@@ -38,11 +38,10 @@
             </File>
             <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLFOLDER" On="uninstall" />
             <RegistryValue Root="HKCU"
-                            Key="Software\\Hang"
+                            Key="Software\Hang"
                             Name="Installed"
                             Type="integer"
-                            Value="1"
-                            KeyPath="yes" />
+                            Value="1" />
           </Component>
         </Directory>
       </Directory>
@@ -52,21 +51,8 @@
       <Directory Id="DesktopFolder" />
     </Directory>
 
-    <DirectoryRef Id="ProgramMenuDir">
-      <Component Id="cmpRemoveProgramMenu" Guid="{0682E1A7-6ACE-4BDD-92AA-2F0F396A7896}">
-        <RemoveFolder Id="RemoveProgramMenuDir" Directory="ProgramMenuDir" On="uninstall" />
-        <RegistryValue Root="HKCU"
-                        Key="Software\\Hang"
-                        Name="ProgramMenuInstalled"
-                        Type="integer"
-                        Value="1"
-                        KeyPath="yes" />
-      </Component>
-    </DirectoryRef>
-
     <Feature Id="ProductFeature" Title="Hang" Level="1">
       <ComponentRef Id="cmpHangClient" />
-      <ComponentRef Id="cmpRemoveProgramMenu" />
     </Feature>
   </Product>
 </Wix>
