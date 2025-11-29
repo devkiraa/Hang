@@ -14,6 +14,8 @@ use crate::{
 };
 
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"];
+const KEYBOARD_SEEK_STEP: f64 = 5.0;
+const KEYBOARD_VOLUME_STEP: f64 = 5.0;
 
 pub struct HangApp {
     // Video player
@@ -538,6 +540,57 @@ impl HangApp {
         }
     }
 
+    fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.wants_keyboard_input() {
+            return;
+        }
+
+        let (space, left, right, up, down, f_key) = ctx.input(|input| {
+            (
+                input.key_pressed(egui::Key::Space),
+                input.key_pressed(egui::Key::ArrowLeft),
+                input.key_pressed(egui::Key::ArrowRight),
+                input.key_pressed(egui::Key::ArrowUp),
+                input.key_pressed(egui::Key::ArrowDown),
+                input.key_pressed(egui::Key::F),
+            )
+        });
+
+        if space {
+            self.toggle_play();
+        }
+
+        if left {
+            let mut new_pos = self.current_position - KEYBOARD_SEEK_STEP;
+            if new_pos.is_sign_negative() {
+                new_pos = 0.0;
+            }
+            self.seek(new_pos);
+        }
+
+        if right {
+            let new_pos = (self.current_position + KEYBOARD_SEEK_STEP).min(self.duration.max(0.0));
+            self.seek(new_pos);
+        }
+
+        if up {
+            let new_vol = (self.volume + KEYBOARD_VOLUME_STEP).min(100.0);
+            self.set_volume(new_vol);
+            self.volume = new_vol;
+        }
+
+        if down {
+            let new_vol = (self.volume - KEYBOARD_VOLUME_STEP).max(0.0);
+            self.set_volume(new_vol);
+            self.volume = new_vol;
+        }
+
+        if f_key {
+            self.is_fullscreen = !self.is_fullscreen;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.is_fullscreen));
+        }
+    }
+
     fn render_room_dialog(&mut self, ctx: &egui::Context) {
         if !self.room_dialog_open {
             return;
@@ -836,6 +889,7 @@ impl eframe::App for HangApp {
         self.update_video_texture(ctx);
         self.handle_file_drop(ctx);
         self.poll_invite_channel();
+        self.handle_keyboard_shortcuts(ctx);
         if self.is_fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.is_fullscreen = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -956,6 +1010,9 @@ impl eframe::App for HangApp {
                     ui.separator();
                     self.draw_participant_indicator(ui);
                 }
+
+                ui.add_space(4.0);
+                ui.small("Keys: Space toggles playback · ←/→ seek 5s · ↑/↓ volume · F fullscreen");
             });
         }
 
@@ -1016,7 +1073,9 @@ impl eframe::App for HangApp {
         }
 
         // Central panel (embedded video output)
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(egui::Color32::BLACK))
+            .show(ctx, |ui| {
             if let Some(texture) = &self.video_texture {
                 let available = ui.available_size();
                 let draw_size = self.fitted_video_size(available);
@@ -1043,7 +1102,7 @@ impl eframe::App for HangApp {
                     }
                 });
             }
-        });
+            });
 
         // Request continuous repaint for smooth updates
         ctx.request_repaint();

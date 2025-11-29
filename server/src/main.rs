@@ -29,6 +29,8 @@ use state::ServerState;
 type ClientSender = mpsc::UnboundedSender<Message>;
 type ClientSenders = Arc<RwLock<HashMap<Uuid, ClientSender>>>;
 
+const LOG_TAG: &str = "[Hang Server]";
+
 #[derive(Clone)]
 struct AppState {
     server_state: ServerState,
@@ -66,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(app_state.clone());
 
     let listener = TcpListener::bind(addr).await?;
-    tracing::info!("Hang Server listening on {}", addr);
+    tracing::info!("{LOG_TAG} Listening on {}", addr);
     axum::serve(listener, app).await?;
     Ok(())
 }

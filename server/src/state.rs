@@ -6,6 +6,8 @@ use uuid::Uuid;
 
 use crate::protocol::{ClientInfo, Room};
 
+const LOG_TAG: &str = "[Hang Server]";
+
 /// Shared server state
 #[derive(Clone)]
 pub struct ServerState {
@@ -51,7 +53,7 @@ impl ServerState {
             client.room_id = Some(room_id.clone());
         }
 
-        tracing::info!("Room {} created by client {}", room_id, host_id);
+        tracing::info!("{LOG_TAG} Room {} created by client {}", room_id, host_id);
         (room_id, passcode_hash.is_some())
     }
 
@@ -100,7 +102,7 @@ impl ServerState {
             client.room_id = Some(room_id.to_string());
         }
 
-        tracing::info!("Client {} joined room {}", client_id, room_id);
+        tracing::info!("{LOG_TAG} Client {} joined room {}", client_id, room_id);
         Ok(is_host)
     }
 
@@ -119,7 +121,7 @@ impl ServerState {
                     drop(members);
                     self.room_members.remove(&room_id);
                     self.rooms.remove(&room_id);
-                    tracing::info!("Room {} deleted (empty)", room_id);
+                    tracing::info!("{LOG_TAG} Room {} deleted (empty)", room_id);
                     return Some(room_id);
                 }
             }
@@ -129,7 +131,7 @@ impl ServerState {
                 client.room_id = None;
             }
 
-            tracing::info!("Client {} left room {}", client_id, room_id);
+            tracing::info!("{LOG_TAG} Client {} left room {}", client_id, room_id);
             Some(room_id)
         } else {
             None
@@ -137,24 +139,25 @@ impl ServerState {
     }
 
     pub async fn get_room_members(&self, room_id: &str) -> Vec<Uuid> {
-        self.room_members
-            .get(room_id)
-            .map(|members| {
-                let members = members.blocking_read();
-                members.clone()
-            })
-            .unwrap_or_default()
+        if let Some(members_ref) = self.room_members.get(room_id) {
+            let members_lock = Arc::clone(&*members_ref);
+            drop(members_ref);
+            let members = members_lock.read().await;
+            members.clone()
+        } else {
+            Vec::new()
+        }
     }
 
     pub fn add_client(&self, client_id: Uuid) {
         self.clients.insert(client_id, ClientInfo { room_id: None });
-        tracing::info!("Client {} connected", client_id);
+        tracing::info!("{LOG_TAG} Client {} connected", client_id);
     }
 
     pub async fn remove_client(&self, client_id: Uuid) {
         let _ = self.leave_room(client_id).await;
         self.clients.remove(&client_id);
-        tracing::info!("Client {} disconnected", client_id);
+        tracing::info!("{LOG_TAG} Client {} disconnected", client_id);
     }
 
     fn generate_room_code(&self) -> String {
