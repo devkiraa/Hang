@@ -38,6 +38,7 @@ struct AppState {
 }
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
+const THANK_YOU_HTML: &str = include_str!("../static/thank-you.html");
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -61,6 +62,8 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(serve_index))
+        .route("/thank-you", get(serve_thank_you))
+        .route("/thank-you.html", get(serve_thank_you))
         .route("/healthz", get(health_check))
         .route("/ws", get(ws_endpoint))
         .route("/join", get(join_page))
@@ -79,6 +82,10 @@ async fn ws_endpoint(ws: WebSocketUpgrade, State(state): State<AppState>) -> imp
 
 async fn serve_index() -> Html<&'static str> {
     Html(INDEX_HTML)
+}
+
+async fn serve_thank_you() -> Html<&'static str> {
+    Html(THANK_YOU_HTML)
 }
 
 async fn health_check() -> &'static str {
