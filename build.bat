@@ -3,7 +3,7 @@ setlocal
 
 set "VERSION=%~1"
 if "%VERSION%"=="" (
-    set "VERSION=0.0.0"
+    set "VERSION=1.0.0"
 )
 
 set "EXPORT_DIR=%CD%\export"
