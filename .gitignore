@@ -1,6 +1,23 @@
-target/
-Cargo.lock
-*.pdb
-*.exe
+# Build artifacts
+/target/
+/server/target/
+/client/target/
+
+# Tooling & IDE metadata
+/.vscode/
+/.idea/
+/.cargo/
+
+# OS cruft
 .DS_Store
+Thumbs.db
+
+# Generated binaries & logs
+*.exe
+*.dll
+*.pdb
 *.log
+*.tmp
+
+# Workspace lockfile (generated locally per dev environment)
+Cargo.lock
