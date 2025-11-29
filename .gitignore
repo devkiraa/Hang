@@ -18,6 +18,9 @@ Thumbs.db
 *.pdb
 *.log
 *.tmp
+*.msi
+installer/*.wixobj
+installer/*.wixpdb
 
 # Workspace lockfile (generated locally per dev environment)
 Cargo.lock

@@ -19,6 +19,8 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
+    env:
+      HANG_DISABLE_LOCAL: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,7 +45,17 @@ jobs:
         run: |
           $name = "Hang ${{ inputs.version }}.exe"
           Copy-Item -Path target\release\hang-client.exe -Destination "$name" -Force
-          echo "ASSET_NAME=$name" | Out-File -FilePath $Env:GITHUB_ENV -Append
+          echo "ASSET_EXE=$name" | Out-File -FilePath $Env:GITHUB_ENV -Append
+
+      - name: Install WiX Toolset
+        run: choco install wix --version 3.11.2 -y
+
+      - name: Build MSI installer
+        shell: pwsh
+        run: |
+          $msi = "Hang ${{ inputs.version }}.msi"
+          installer\build_installer.ps1 -Version "${{ inputs.version }}" -Output "$msi"
+          echo "ASSET_MSI=$msi" | Out-File -FilePath $Env:GITHUB_ENV -Append
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v1
@@ -51,4 +63,6 @@ jobs:
           tag_name: ${{ inputs.version }}
           name: ${{ inputs.title }}
           body: ${{ inputs.notes }}
-          files: ${{ env.ASSET_NAME }}
+          files: |
+            ${{ env.ASSET_EXE }}
+            ${{ env.ASSET_MSI }}

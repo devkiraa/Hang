@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Hang"
+           Language="1033"
+           Version="$(var.ProductVersion)"
+           Manufacturer="Hang"
+           UpgradeCode="{D2E6E0CD-1B8D-4A34-9C69-44D5C8B7B2D9}">
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Platform="x64" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Hang is already installed." />
+    <MediaTemplate />
+
+    <Property Id="ARPPRODUCTICON" Value="HangIcon" />
+
+    <Icon Id="HangIcon" SourceFile="$(var.ClientExePath)" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Hang">
+          <Component Id="cmpHangClient" Guid="{C4F7621B-3CF4-4F34-9667-7300E8BDFA8E}" Win64="yes">
+            <File Id="filHangClientExe" Source="$(var.ClientExePath)" KeyPath="yes">
+              <Shortcut Id="StartMenuHang"
+                        Directory="ProgramMenuDir"
+                        Name="Hang"
+                        WorkingDirectory="INSTALLFOLDER"
+                        Icon="HangIcon"
+                        IconIndex="0" />
+              <Shortcut Id="DesktopHang"
+                        Directory="DesktopFolder"
+                        Name="Hang"
+                        WorkingDirectory="INSTALLFOLDER"
+                        Icon="HangIcon"
+                        IconIndex="0" />
+            </File>
+            <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLFOLDER" On="uninstall" />
+            <RegistryValue Root="HKCU"
+                            Key="Software\\Hang"
+                            Name="Installed"
+                            Type="integer"
+                            Value="1"
+                            KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ProgramMenuDir" Name="Hang" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="ProgramMenuDir">
+      <Component Id="cmpRemoveProgramMenu" Guid="{0682E1A7-6ACE-4BDD-92AA-2F0F396A7896}">
+        <RemoveFolder Id="RemoveProgramMenuDir" Directory="ProgramMenuDir" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                        Key="Software\\Hang"
+                        Name="ProgramMenuInstalled"
+                        Type="integer"
+                        Value="1"
+                        KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="ProductFeature" Title="Hang" Level="1">
+      <ComponentRef Id="cmpHangClient" />
+      <ComponentRef Id="cmpRemoveProgramMenu" />
+    </Feature>
+  </Product>
+</Wix>

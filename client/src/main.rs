@@ -140,15 +140,11 @@ async fn run_connection_loop(
     app_state: Arc<Mutex<Option<Arc<Mutex<HangApp>>>>>,
     mut reconnect_rx: mpsc::UnboundedReceiver<()>,
 ) {
-    const ENDPOINTS: [(&str, &str); 2] = [
-        ("local development", LOCAL_WS_URL),
-        ("Render deployment", RENDER_WS_URL),
-    ];
-
     let mut attempt: u32 = 0;
+    let endpoints = connection_endpoints();
 
     'outer: loop {
-        for (label, url) in ENDPOINTS.iter().copied() {
+        for (label, url) in endpoints.iter().copied() {
             attempt += 1;
             update_connection_status(
                 &app_state,
@@ -212,6 +208,21 @@ async fn run_connection_loop(
             }
         }
     }
+}
+
+fn connection_endpoints() -> Vec<(&'static str, &'static str)> {
+    let disable_local = std::env::var("HANG_DISABLE_LOCAL").is_ok();
+    let prefer_local = std::env::var("HANG_PREFER_LOCAL").is_ok();
+
+    let mut endpoints = Vec::with_capacity(2);
+    if prefer_local && !disable_local {
+        endpoints.push(("local development", LOCAL_WS_URL));
+    }
+    endpoints.push(("Render deployment", RENDER_WS_URL));
+    if !prefer_local && !disable_local {
+        endpoints.push(("local development", LOCAL_WS_URL));
+    }
+    endpoints
 }
 
 async fn warm_up_backend(
