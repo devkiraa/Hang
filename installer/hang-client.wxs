@@ -22,26 +22,8 @@
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="Hang">
           <Component Id="cmpHangClient" Guid="{C4F7621B-3CF4-4F34-9667-7300E8BDFA8E}" Win64="yes">
-            <File Id="filHangClientExe" Source="__CLIENT_EXE__" KeyPath="yes">
-              <Shortcut Id="StartMenuHang"
-                        Directory="ProgramMenuDir"
-                        Name="Hang"
-                        WorkingDirectory="INSTALLFOLDER"
-                        Icon="HangIcon"
-                        IconIndex="0" />
-              <Shortcut Id="DesktopHang"
-                        Directory="DesktopFolder"
-                        Name="Hang"
-                        WorkingDirectory="INSTALLFOLDER"
-                        Icon="HangIcon"
-                        IconIndex="0" />
-            </File>
+            <File Id="filHangClientExe" Source="__CLIENT_EXE__" KeyPath="yes" />
             <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLFOLDER" On="uninstall" />
-            <RegistryValue Root="HKCU"
-                            Key="Software\Hang"
-                            Name="Installed"
-                            Type="integer"
-                            Value="1" />
           </Component>
         </Directory>
       </Directory>
@@ -51,8 +33,45 @@
       <Directory Id="DesktopFolder" />
     </Directory>
 
+    <DirectoryRef Id="ProgramMenuDir">
+      <Component Id="cmpStartMenuShortcut" Guid="{AA717E43-25D1-4BD8-A2B6-86A0AE0B023F}">
+        <Shortcut Id="StartMenuHang"
+                  Name="Hang"
+                  Target="[#filHangClientExe]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="HangIcon"
+                  IconIndex="0" />
+        <RemoveFolder Id="RemoveProgramMenuDir" Directory="ProgramMenuDir" On="uninstall" />
+        <RegistryValue Root="HKCU"
+                        Key="Software\Hang"
+                        Name="StartMenuShortcut"
+                        Type="integer"
+                        Value="1"
+                        KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="cmpDesktopShortcut" Guid="{BD3C0435-0800-4C87-8E09-7B1AD8F32E8C}">
+        <Shortcut Id="DesktopHang"
+                  Name="Hang"
+                  Target="[#filHangClientExe]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="HangIcon"
+                  IconIndex="0" />
+        <RegistryValue Root="HKCU"
+                        Key="Software\Hang"
+                        Name="DesktopShortcut"
+                        Type="integer"
+                        Value="1"
+                        KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
     <Feature Id="ProductFeature" Title="Hang" Level="1">
       <ComponentRef Id="cmpHangClient" />
+      <ComponentRef Id="cmpStartMenuShortcut" />
+      <ComponentRef Id="cmpDesktopShortcut" />
     </Feature>
   </Product>
 </Wix>
