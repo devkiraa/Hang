@@ -139,14 +139,6 @@ impl VideoPlayer {
         unsafe { libvlc_audio_get_volume(self.media_player).map(|v| v as f64) }
     }
 
-    /// Toggle fullscreen
-    pub fn toggle_fullscreen(&self) -> Result<(), String> {
-        unsafe {
-            let current = libvlc_get_fullscreen(self.media_player);
-            libvlc_set_fullscreen(self.media_player, !current)
-        }
-    }
-
     /// Get available audio tracks
     pub fn get_audio_tracks(&self) -> Result<Vec<AudioTrack>, String> {
         unsafe { enumerate_tracks(libvlc_audio_get_track_description, self.media_player) }
@@ -770,25 +762,6 @@ unsafe fn libvlc_media_player_next_frame(player: *mut libvlc_media_player_t) -> 
         get_symbol(b"libvlc_media_player_next_frame\0")?;
     sym(player);
     Ok(())
-}
-
-unsafe fn libvlc_get_fullscreen(player: *mut libvlc_media_player_t) -> bool {
-    let sym: Symbol<unsafe extern "C" fn(*mut libvlc_media_player_t) -> c_int> =
-        get_symbol(b"libvlc_get_fullscreen\0").unwrap();
-    sym(player) != 0
-}
-
-unsafe fn libvlc_set_fullscreen(
-    player: *mut libvlc_media_player_t,
-    value: bool,
-) -> Result<(), String> {
-    let sym: Symbol<unsafe extern "C" fn(*mut libvlc_media_player_t, c_int) -> c_int> =
-        get_symbol(b"libvlc_set_fullscreen\0")?;
-    if sym(player, if value { 1 } else { 0 }) == 0 {
-        Ok(())
-    } else {
-        Err(format_error("Failed to toggle fullscreen"))
-    }
 }
 
 #[cfg(target_os = "windows")]

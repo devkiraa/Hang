@@ -41,6 +41,8 @@ pub struct HangApp {
     is_host: bool,
     participant_count: usize,
     room_dialog_open: bool,
+    is_fullscreen: bool,
+    controls_visible: bool,
 
     // Settings panel
     show_settings: bool,
@@ -83,6 +85,8 @@ impl HangApp {
             is_host: false,
             participant_count: 0,
             room_dialog_open: false,
+            is_fullscreen: false,
+            controls_visible: true,
             show_settings: false,
             audio_tracks: Vec::new(),
             subtitle_tracks: Vec::new(),
@@ -568,6 +572,22 @@ impl HangApp {
             );
         });
     }
+
+    fn update_control_visibility(&mut self, ctx: &egui::Context) {
+        if !self.is_fullscreen {
+            self.controls_visible = true;
+            return;
+        }
+
+        let (pointer_pos, screen_rect) = ctx.input(|i| (i.pointer.hover_pos(), i.screen_rect));
+        let hover = pointer_pos.map(|pos| {
+            let top_zone = screen_rect.top() + 80.0;
+            let bottom_zone = screen_rect.bottom() - 120.0;
+            pos.y <= top_zone || pos.y >= bottom_zone
+        });
+
+        self.controls_visible = hover.unwrap_or(false);
+    }
 }
 
 impl eframe::App for HangApp {
@@ -575,113 +595,127 @@ impl eframe::App for HangApp {
         self.update_playback_state();
         self.update_video_texture(ctx);
         self.handle_file_drop(ctx);
+        if self.is_fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.is_fullscreen = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
+        self.update_control_visibility(ctx);
+        let show_chrome = !self.is_fullscreen || self.controls_visible;
 
         // Top menu bar
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                self.draw_logo(ui);
-                ui.separator();
+        if show_chrome {
+            egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+                egui::menu::bar(ui, |ui| {
+                    self.draw_logo(ui);
+                    ui.separator();
 
-                if ui.button("Open Video").clicked() {
-                    self.select_video_file();
-                }
+                    if ui.button("Open Video").clicked() {
+                        self.select_video_file();
+                    }
 
-                if ui.button("⚙ Settings").clicked() {
-                    self.show_settings = !self.show_settings;
-                }
+                    if ui.button("⚙ Settings").clicked() {
+                        self.show_settings = !self.show_settings;
+                    }
 
-                if ui.button("Room Controls").clicked() {
-                    self.room_dialog_open = true;
-                }
+                    if ui.button("Room Controls").clicked() {
+                        self.room_dialog_open = true;
+                    }
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(&self.status_message);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(&self.status_message);
+                    });
                 });
             });
-        });
+        }
 
         self.render_room_dialog(ctx);
 
         // Bottom control panel
-        egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
-            ui.add_space(5.0);
+        if show_chrome {
+            egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
+                ui.add_space(5.0);
 
-            // Timeline slider
-            let mut position = self.current_position;
-            let slider = egui::Slider::new(&mut position, 0.0..=self.duration.max(1.0))
-                .show_value(false)
-                .text("Timeline");
-            let slider = ui.add_sized([ui.available_width(), 22.0], slider);
+                // Timeline slider
+                let mut position = self.current_position;
+                let slider = egui::Slider::new(&mut position, 0.0..=self.duration.max(1.0))
+                    .show_value(false)
+                    .text("Timeline");
+                let slider = ui.add_sized([ui.available_width(), 22.0], slider);
 
-            if slider.drag_stopped() || slider.clicked() {
-                self.seek(position);
-            }
-
-            ui.horizontal(|ui| {
-                // Play/Pause
-                let play_btn = if self.is_playing { "⏸" } else { "▶" };
-                if ui.button(play_btn).clicked() {
-                    self.toggle_play();
+                if slider.drag_stopped() || slider.clicked() {
+                    self.seek(position);
                 }
 
-                // Stop
-                if ui.button("⏹").clicked() {
-                    let _ = self.player.stop();
-                }
+                ui.horizontal(|ui| {
+                    // Play/Pause
+                    let play_btn = if self.is_playing { "⏸" } else { "▶" };
+                    if ui.button(play_btn).clicked() {
+                        self.toggle_play();
+                    }
 
-                // Frame step
-                if ui.button("⏮").clicked() {
-                    let _ = self.player.frame_step_backward();
-                }
-                if ui.button("⏭").clicked() {
-                    let _ = self.player.frame_step_forward();
-                }
+                    // Stop
+                    if ui.button("⏹").clicked() {
+                        let _ = self.player.stop();
+                    }
 
-                ui.separator();
+                    // Frame step
+                    if ui.button("⏮").clicked() {
+                        let _ = self.player.frame_step_backward();
+                    }
+                    if ui.button("⏭").clicked() {
+                        let _ = self.player.frame_step_forward();
+                    }
 
-                // Time display
-                ui.label(format!(
-                    "{} / {}",
-                    format_time(self.current_position),
-                    format_time(self.duration)
-                ));
+                    ui.separator();
 
-                ui.separator();
+                    // Time display
+                    ui.label(format!(
+                        "{} / {}",
+                        format_time(self.current_position),
+                        format_time(self.duration)
+                    ));
 
-                // Speed control
-                ui.label("Speed:");
-                let mut speed = self.speed;
-                if ui
-                    .add(egui::Slider::new(&mut speed, 0.25..=2.0).suffix("x"))
-                    .changed()
-                {
-                    self.set_speed(speed);
-                }
+                    ui.separator();
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Volume
-                    let mut vol = self.volume;
+                    // Speed control
+                    ui.label("Speed:");
+                    let mut speed = self.speed;
                     if ui
-                        .add(egui::Slider::new(&mut vol, 0.0..=100.0).text("🔊"))
+                        .add(egui::Slider::new(&mut speed, 0.25..=2.0).suffix("x"))
                         .changed()
                     {
-                        self.set_volume(vol);
+                        self.set_speed(speed);
                     }
 
-                    // Fullscreen
-                    if ui.button("⛶").clicked() {
-                        let _ = self.player.toggle_fullscreen();
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Volume
+                        let mut vol = self.volume;
+                        if ui
+                            .add(egui::Slider::new(&mut vol, 0.0..=100.0).text("🔊"))
+                            .changed()
+                        {
+                            self.set_volume(vol);
+                        }
+
+                        // Fullscreen
+                        let fs_label = if self.is_fullscreen { "🗗" } else { "⛶" };
+                        if ui.button(fs_label).clicked() {
+                            self.is_fullscreen = !self.is_fullscreen;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(
+                                self.is_fullscreen,
+                            ));
+                        }
+                    });
                 });
+
+                ui.add_space(5.0);
+
+                if self.in_room {
+                    ui.separator();
+                    self.draw_participant_indicator(ui);
+                }
             });
-
-            ui.add_space(5.0);
-
-            if self.in_room {
-                ui.separator();
-                self.draw_participant_indicator(ui);
-            }
-        });
+        }
 
         // Settings window
         if self.show_settings {
