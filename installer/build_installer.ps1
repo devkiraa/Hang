@@ -88,7 +88,7 @@ $heat = (Get-Command heat.exe).Path
 try {
     & $candle -arch x64 -dRuntimeSourceDir=$runtimeDir -out $mainObj $wxsGenerated
     & $candle -arch x64 -dRuntimeSourceDir=$runtimeDir -out $runtimeObj $heatFragment
-    & $light $mainObj $runtimeObj -o $outputPath
+    & $light -dRuntimeSourceDir=$runtimeDir $mainObj $runtimeObj -o $outputPath
 }
 finally {
     if (Test-Path $wxsGenerated) {

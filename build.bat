@@ -66,7 +66,7 @@ echo Exported EXE: %EXPORT_DIR%\%EXPORTED_EXE%
 if "%MSI_BUILT%"=="1" (
     echo Installer   : %EXPORT_DIR%\%MSI_NAME%
 ) else (
-    echo Installer   : (not created - WiX toolset missing)
+    echo Installer   : ^(not created - WiX toolset missing^)
 )
 echo.
 endlocal
