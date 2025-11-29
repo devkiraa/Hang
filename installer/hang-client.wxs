@@ -3,7 +3,7 @@
   <Product Id="*"
            Name="Hang"
            Language="1033"
-           Version="$(var.ProductVersion)"
+           Version="__PRODUCT_VERSION__"
            Manufacturer="Hang"
            UpgradeCode="{D2E6E0CD-1B8D-4A34-9C69-44D5C8B7B2D9}">
     <Package InstallerVersion="500"
@@ -16,13 +16,13 @@
 
     <Property Id="ARPPRODUCTICON" Value="HangIcon" />
 
-    <Icon Id="HangIcon" SourceFile="$(var.ClientExePath)" />
+    <Icon Id="HangIcon" SourceFile="__CLIENT_EXE__" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="Hang">
           <Component Id="cmpHangClient" Guid="{C4F7621B-3CF4-4F34-9667-7300E8BDFA8E}" Win64="yes">
-            <File Id="filHangClientExe" Source="$(var.ClientExePath)" KeyPath="yes">
+            <File Id="filHangClientExe" Source="__CLIENT_EXE__" KeyPath="yes">
               <Shortcut Id="StartMenuHang"
                         Directory="ProgramMenuDir"
                         Name="Hang"
