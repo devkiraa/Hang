@@ -3,7 +3,10 @@ param(
     [string]$Version,
 
     [Parameter(Mandatory = $true)]
-    [string]$Output
+    [string]$Output,
+
+    [Parameter(Mandatory = $true)]
+    [string]$PayloadDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,24 +34,39 @@ function EscapeXml {
 
 $normalizedVersion = NormalizeVersion -Value $Version
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
-$exePath = Join-Path $root 'target\release\hang-client.exe'
+$payloadRoot = Resolve-Path $PayloadDir
+$exePath = Join-Path $payloadRoot 'Hang.exe'
 if (-not (Test-Path $exePath)) {
-    throw "Client binary not found. Build it with 'cargo build --release -p hang-client' before packaging."
+    throw "Payload executable not found at $exePath"
+}
+
+$runtimeDir = Join-Path $payloadRoot 'runtime'
+if (-not (Test-Path $runtimeDir)) {
+    throw "Runtime directory not found at $runtimeDir"
 }
 
 $wxsTemplate = Join-Path $PSScriptRoot 'hang-client.wxs'
 $wxsGenerated = Join-Path $PSScriptRoot 'hang-client.generated.wxs'
-$wixobj = Join-Path $PSScriptRoot 'hang-client.wixobj'
-if (Test-Path $wixobj) {
-    Remove-Item $wixobj -Force
+$heatFragment = Join-Path $PSScriptRoot 'vlc-runtime.generated.wxs'
+$mainObj = Join-Path $PSScriptRoot 'hang-client.wixobj'
+$runtimeObj = Join-Path $PSScriptRoot 'vlc-runtime.wixobj'
+if (Test-Path $mainObj) {
+    Remove-Item $mainObj -Force
+}
+if (Test-Path $runtimeObj) {
+    Remove-Item $runtimeObj -Force
 }
 if (Test-Path $wxsGenerated) {
     Remove-Item $wxsGenerated -Force
+}
+if (Test-Path $heatFragment) {
+    Remove-Item $heatFragment -Force
 }
 
 $template = Get-Content $wxsTemplate -Raw
 $rendered = $template.Replace('__PRODUCT_VERSION__', $normalizedVersion)
 $rendered = $rendered.Replace('__CLIENT_EXE__', (EscapeXml -Value $exePath))
+$rendered = $rendered.Replace('__PAYLOAD_DIR__', (EscapeXml -Value $payloadRoot))
 Set-Content -Path $wxsGenerated -Value $rendered -Encoding UTF8
 
 if ([System.IO.Path]::IsPathRooted($Output)) {
@@ -63,14 +81,27 @@ if (-not (Test-Path $outputDirectory)) {
 
 $candle = (Get-Command candle.exe).Path
 $light = (Get-Command light.exe).Path
+$heat = (Get-Command heat.exe).Path
+
+& $heat dir $runtimeDir -cg VlcRuntimeGroup -dr VlcInstallDir -srd -gg -var var.RuntimeSourceDir -out $heatFragment
 
 try {
-    & $candle -arch x64 -o $wixobj $wxsGenerated
-    & $light $wixobj -o $outputPath
+    & $candle -arch x64 -dRuntimeSourceDir=$runtimeDir -out $mainObj $wxsGenerated
+    & $candle -arch x64 -dRuntimeSourceDir=$runtimeDir -out $runtimeObj $heatFragment
+    & $light $mainObj $runtimeObj -o $outputPath
 }
 finally {
     if (Test-Path $wxsGenerated) {
         Remove-Item $wxsGenerated -Force
+    }
+    if (Test-Path $heatFragment) {
+        Remove-Item $heatFragment -Force
+    }
+    if (Test-Path $mainObj) {
+        Remove-Item $mainObj -Force
+    }
+    if (Test-Path $runtimeObj) {
+        Remove-Item $runtimeObj -Force
     }
 }
 

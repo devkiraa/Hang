@@ -21,6 +21,8 @@ Thumbs.db
 *.msi
 installer/*.wixobj
 installer/*.wixpdb
+export/
+!export/.gitkeep
 
 # Workspace lockfile (generated locally per dev environment)
 Cargo.lock

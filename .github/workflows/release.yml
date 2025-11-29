@@ -41,10 +41,16 @@ jobs:
       - name: Build Hang client
         run: cargo build --release -p hang-client
 
+      - name: Prepare payload
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path export -Force | Out-Null
+          installer\prepare_payload.ps1 -Payload "export\payload" -Version "${{ inputs.version }}"
+
       - name: Prepare executable
         run: |
           $name = "Hang ${{ inputs.version }}.exe"
-          Copy-Item -Path target\release\hang-client.exe -Destination "$name" -Force
+          Copy-Item -Path export\payload\Hang.exe -Destination "$name" -Force
           echo "ASSET_EXE=$name" | Out-File -FilePath $Env:GITHUB_ENV -Append
 
       - name: Install WiX Toolset
@@ -54,7 +60,7 @@ jobs:
         shell: pwsh
         run: |
           $msi = "Hang ${{ inputs.version }}.msi"
-          installer\build_installer.ps1 -Version "${{ inputs.version }}" -Output "$msi"
+          installer\build_installer.ps1 -Version "${{ inputs.version }}" -PayloadDir "export\payload" -Output "$msi"
           echo "ASSET_MSI=$msi" | Out-File -FilePath $Env:GITHUB_ENV -Append
 
       - name: Upload release asset

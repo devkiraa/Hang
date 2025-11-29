@@ -25,6 +25,7 @@
             <File Id="filHangClientExe" Source="__CLIENT_EXE__" KeyPath="yes" />
             <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLFOLDER" On="uninstall" />
           </Component>
+          <Directory Id="VlcInstallDir" Name="runtime" />
         </Directory>
       </Directory>
       <Directory Id="ProgramMenuFolder">
@@ -72,6 +73,7 @@
       <ComponentRef Id="cmpHangClient" />
       <ComponentRef Id="cmpStartMenuShortcut" />
       <ComponentRef Id="cmpDesktopShortcut" />
+      <ComponentGroupRef Id="VlcRuntimeGroup" />
     </Feature>
   </Product>
 </Wix>
