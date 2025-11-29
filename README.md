@@ -1,4 +1,4 @@
-# Hang Sync Player
+# Hang
 
 A desktop video player with synchronized room-based viewing for Windows.
 
@@ -35,7 +35,7 @@ A desktop video player with synchronized room-based viewing for Windows.
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                   Hang Sync Server                   │
+│                     Hang Server                      │
 │  (WebSocket Server - Room Management & Sync Relay)  │
 └─────────────────────────────────────────────────────┘
                          ↕ WebSocket

@@ -1,14 +1,14 @@
-# Hang Sync Player - Technical Architecture
+# Hang - Technical Architecture
 
 ## System Overview
 
-Hang Sync Player uses a client-server architecture where video files remain local on each client machine, while only synchronization commands are transmitted over the network.
+Hang uses a client-server architecture where video files remain local on each client machine, while only synchronization commands are transmitted over the network.
 
 ## Architecture Diagram
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        HANG SYNC SERVER                             │
+│                           HANG SERVER                               │
 │                     (Rust + Tokio + WebSocket)                      │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
@@ -589,4 +589,4 @@ server {
 
 **Document Version**: 1.0  
 **Last Updated**: 2025-11-27  
-**Maintainer**: Hang Sync Player Team
+**Maintainer**: Hang Team

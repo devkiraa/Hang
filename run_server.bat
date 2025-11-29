@@ -1,5 +1,5 @@
 @echo off
-echo Starting Hang Sync Server...
+echo Starting Hang Server...
 cd server
 start "Hang Server" cargo run --release
 echo Server started in new window

@@ -2,6 +2,7 @@
 name = "hang-client"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 tokio = { workspace = true }
@@ -21,3 +22,6 @@ rfd = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

@@ -1,5 +1,5 @@
 @echo off
-echo Starting Hang Sync Client...
+echo Starting Hang Client...
 cd client
 cargo run --release
 cd ..

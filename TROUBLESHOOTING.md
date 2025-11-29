@@ -114,7 +114,7 @@ $env:LIBVLC_PATH = "C:\Program Files\VideoLAN\VLC\libvlc.dll"
    cd server
    cargo run --release
    
-   # Should see: "Hang Sync Server listening on ws://0.0.0.0:3005"
+   # Should see: "Hang Server listening on ws://0.0.0.0:3005"
    ```
 
 2. **Wrong server URL**:
@@ -125,7 +125,7 @@ $env:LIBVLC_PATH = "C:\Program Files\VideoLAN\VLC\libvlc.dll"
 3. **Firewall blocking port 3005**:
    ```powershell
    # Windows Firewall - allow port 3005
-   netsh advfirewall firewall add rule name="Hang Sync" dir=in action=allow protocol=TCP localport=3005
+   netsh advfirewall firewall add rule name="Hang" dir=in action=allow protocol=TCP localport=3005
    ```
 
 4. **Server crashed/exited**:
@@ -332,7 +332,7 @@ $hash.Hash
 1. **Firewall blocking**:
    ```powershell
    # On server machine
-   netsh advfirewall firewall add rule name="Hang Sync" dir=in action=allow protocol=TCP localport=3005
+   netsh advfirewall firewall add rule name="Hang" dir=in action=allow protocol=TCP localport=3005
    ```
 
 2. **Server bound to localhost only**:

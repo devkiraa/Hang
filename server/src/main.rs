@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(app_state.clone());
 
     let listener = TcpListener::bind(addr).await?;
-    tracing::info!("Hang Sync Server listening on {}", addr);
+    tracing::info!("Hang Server listening on {}", addr);
     axum::serve(listener, app).await?;
     Ok(())
 }

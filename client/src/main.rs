@@ -77,7 +77,8 @@ async fn main() -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 800.0])
             .with_min_inner_size([1000.0, 600.0])
-            .with_title("Hang Sync Player"),
+            .with_title("Hang")
+            .with_icon(hang_icon()),
         ..Default::default()
     };
     options.renderer = eframe::Renderer::Glow;
@@ -87,7 +88,7 @@ async fn main() -> Result<()> {
     let app_state_clone = Arc::clone(&app_state);
 
     eframe::run_native(
-        "Hang Sync Player",
+        "Hang",
         options,
         Box::new(move |cc| {
             let app = HangApp::new(cc, player_clone, sync_clone);
@@ -110,5 +111,40 @@ struct AppWrapper {
 impl eframe::App for AppWrapper {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.app.lock().update(ctx, frame);
+    }
+}
+
+fn hang_icon() -> egui::IconData {
+    const W: usize = 32;
+    const H: usize = 32;
+    let top = [255.0, 138.0, 0.0];
+    let bottom = [255.0, 108.0, 0.0];
+    let mut rgba = Vec::with_capacity(W * H * 4);
+
+    for y in 0..H {
+        let t = y as f32 / (H.saturating_sub(1)) as f32;
+        let base = [
+            (top[0] + (bottom[0] - top[0]) * t) as u8,
+            (top[1] + (bottom[1] - top[1]) * t) as u8,
+            (top[2] + (bottom[2] - top[2]) * t) as u8,
+            255,
+        ];
+
+        for x in 0..W {
+            let mut color = base;
+            let in_left_bar = (7..=11).contains(&x);
+            let in_right_bar = (20..=24).contains(&x);
+            let in_cross_bar = (11..=21).contains(&x) && (13..=19).contains(&y);
+            if in_left_bar || in_right_bar || in_cross_bar {
+                color = [255, 255, 255, 255];
+            }
+            rgba.extend_from_slice(&color);
+        }
+    }
+
+    egui::IconData {
+        rgba,
+        width: W as u32,
+        height: H as u32,
     }
 }

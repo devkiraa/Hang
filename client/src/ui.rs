@@ -560,15 +560,15 @@ impl HangApp {
     fn draw_logo(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("▣ Hang")
-                    .font(egui::FontId::proportional(20.0))
+                egui::RichText::new("▣")
+                    .font(egui::FontId::proportional(22.0))
                     .color(egui::Color32::from_rgb(255, 145, 0)),
             );
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.label(
-                egui::RichText::new("Sync Player")
-                    .font(egui::FontId::proportional(16.0))
-                    .color(egui::Color32::from_rgb(220, 220, 220)),
+                egui::RichText::new("Hang")
+                    .font(egui::FontId::proportional(20.0))
+                    .color(egui::Color32::WHITE),
             );
         });
     }

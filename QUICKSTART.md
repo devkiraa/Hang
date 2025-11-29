@@ -1,4 +1,4 @@
-# Hang Sync Player - Quick Start
+# Hang - Quick Start
 
 ## Prerequisites Setup
 
