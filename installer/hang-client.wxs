@@ -39,7 +39,7 @@
       <Component Id="cmpStartMenuShortcut" Guid="{AA717E43-25D1-4BD8-A2B6-86A0AE0B023F}">
         <Shortcut Id="StartMenuHang"
                   Name="Hang"
-                  Target="[#filHangClientExe]"
+                  Target="[INSTALLFOLDER]Hang.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="HangIcon"
                   IconIndex="0" />
@@ -57,7 +57,7 @@
       <Component Id="cmpDesktopShortcut" Guid="{BD3C0435-0800-4C87-8E09-7B1AD8F32E8C}">
         <Shortcut Id="DesktopHang"
                   Name="Hang"
-                  Target="[#filHangClientExe]"
+                  Target="[INSTALLFOLDER]Hang.exe"
                   WorkingDirectory="INSTALLFOLDER"
                   Icon="HangIcon"
                   IconIndex="0" />
