@@ -40,7 +40,10 @@ jobs:
         run: cargo build --release -p hang-client
 
       - name: Prepare executable
-        run: Copy-Item -Path client\target\release\hang-client.exe -Destination Hang.exe -Force
+        run: |
+          $name = "Hang ${{ inputs.version }}.exe"
+          Copy-Item -Path client\target\release\hang-client.exe -Destination "$name" -Force
+          echo "ASSET_NAME=$name" | Out-File -FilePath $Env:GITHUB_ENV -Append
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v1
@@ -48,4 +51,4 @@ jobs:
           tag_name: ${{ inputs.version }}
           name: ${{ inputs.title }}
           body: ${{ inputs.notes }}
-          files: Hang.exe
+          files: ${{ env.ASSET_NAME }}
