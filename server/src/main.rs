@@ -1,6 +1,8 @@
 use axum::{
     extract::{
         ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
+        Path,
+        Query,
         State,
     },
     response::{Html, IntoResponse},
@@ -15,6 +17,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
+use serde::Deserialize;
+use url::form_urlencoded;
 
 mod protocol;
 mod state;
@@ -57,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(serve_index))
         .route("/healthz", get(health_check))
         .route("/ws", get(ws_endpoint))
+        .route("/join", get(join_page))
+        .route("/join/:room_id", get(join_page_with_path))
         .with_state(app_state.clone());
 
     let listener = TcpListener::bind(addr).await?;
@@ -75,6 +81,27 @@ async fn serve_index() -> Html<&'static str> {
 
 async fn health_check() -> &'static str {
     "ok"
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct InviteQuery {
+    room: Option<String>,
+    code: Option<String>,
+    file: Option<String>,
+}
+
+async fn join_page(Query(query): Query<InviteQuery>) -> Html<String> {
+    Html(render_join_page(query.room, query.code, query.file))
+}
+
+async fn join_page_with_path(
+    Path(room_id): Path<String>,
+    Query(mut query): Query<InviteQuery>,
+) -> Html<String> {
+    if query.room.is_none() {
+        query.room = Some(room_id);
+    }
+    Html(render_join_page(query.room, query.code, query.file))
 }
 
 async fn handle_connection(socket: WebSocket, state: AppState) {
@@ -136,6 +163,250 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
     client_senders.write().await.remove(&client_id);
     server_state.remove_client(client_id).await;
     send_task.abort();
+}
+
+fn render_join_page(
+    room: Option<String>,
+    code: Option<String>,
+    file: Option<String>,
+) -> String {
+    let room = room.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    let code = code.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    let file = file.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    let heading = room
+        .as_ref()
+        .map(|room_id| format!("Join Hang Room {}", html_escape(room_id)))
+        .unwrap_or_else(|| "Hang Invite".to_string());
+
+    let passcode_block = code
+        .as_ref()
+        .map(|value| {
+            format!(
+                "<div class=\"info\">Passcode: <code>{}</code></div>",
+                html_escape(value)
+            )
+        })
+        .unwrap_or_else(|| "<div class=\"info muted\">No passcode included in this invite.</div>".to_string());
+
+    let file_block = file
+        .as_ref()
+        .map(|value| {
+            format!(
+                "<div class=\"info\">Expected file: <code>{}</code></div>",
+                html_escape(value)
+            )
+        })
+        .unwrap_or_else(|| "<div class=\"info muted\">Host did not specify a file name.</div>".to_string());
+
+    let protocol_url = room
+        .as_ref()
+        .map(|room_id| build_protocol_url(room_id, code.as_deref(), file.as_deref()));
+
+    let launch_section = protocol_url
+        .as_ref()
+        .map(|url| {
+            format!(
+                "<a class=\"primary\" href=\"{href}\">Open Hang Client</a>",
+                href = html_escape_attr(url)
+            )
+        })
+        .unwrap_or_else(|| {
+            "<p class=\"muted\">Missing room code. Ask the host for a valid invite link.</p>"
+                .to_string()
+        });
+
+    let auto_launch_script = protocol_url
+        .as_ref()
+        .map(|url| {
+            let js_url = serde_json::to_string(url).unwrap_or_else(|_| "\"hang://join\"".to_string());
+            format!(
+                "<script>setTimeout(function(){{window.location.href={};}}, 450);</script>",
+                js_url
+            )
+        })
+        .unwrap_or_default();
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang=\"en\">
+  <head>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+    <title>Hang Invite</title>
+    <style>
+      :root {{
+        color-scheme: dark;
+        --bg: #060606;
+        --card: rgba(14, 14, 14, 0.9);
+        --accent: #ff8a00;
+        --text: #f4f4f4;
+        --muted: #9f9f9f;
+      }}
+      body {{
+        margin: 0;
+        font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        min-height: 100vh;
+        background: radial-gradient(circle at top, rgba(255, 138, 0, 0.2), transparent 45%), var(--bg);
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 3rem 1.25rem;
+      }}
+      .card {{
+        width: min(520px, 100%);
+        background: var(--card);
+        border-radius: 28px;
+        padding: clamp(1.75rem, 4vw, 3rem);
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+      }}
+      h1 {{
+        margin-top: 0;
+        font-size: 1.8rem;
+        letter-spacing: 0.01em;
+      }}
+      .info {{
+        margin-top: 1rem;
+        font-size: 1rem;
+      }}
+      .muted {{
+        color: var(--muted);
+      }}
+      code {{
+        background: rgba(255, 255, 255, 0.08);
+        padding: 0.25rem 0.45rem;
+        border-radius: 0.65rem;
+        font-size: 0.95rem;
+      }}
+      .actions {{
+        margin-top: 2rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+      }}
+      .primary {{
+        background: linear-gradient(135deg, #ff8a00, #ff6c00);
+        color: #050505;
+        text-decoration: none;
+        text-align: center;
+        font-weight: 600;
+        padding: 0.9rem 1rem;
+        border-radius: 999px;
+      }}
+      .secondary {{
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 999px;
+        text-align: center;
+        padding: 0.85rem 1rem;
+        color: var(--text);
+        text-decoration: none;
+        font-weight: 500;
+      }}
+    </style>
+    {auto_launch_script}
+  </head>
+  <body>
+    <div class=\"card\">
+      <h1>{heading}</h1>
+      {file_block}
+      {passcode_block}
+      <div class=\"info muted\">1. Ensure the Hang desktop client is installed.</div>
+      <div class=\"info muted\">2. Load the same video file locally before joining.</div>
+      <div class=\"actions\">
+        {launch_section}
+        <a class=\"secondary\" href=\"/downloads/hang-client.exe\">Download Hang Client</a>
+      </div>
+    </div>
+  </body>
+</html>
+"#,
+        heading = heading,
+        file_block = file_block,
+        passcode_block = passcode_block,
+        launch_section = launch_section,
+        auto_launch_script = auto_launch_script
+    )
+}
+
+fn build_protocol_url(room: &str, code: Option<&str>, file: Option<&str>) -> String {
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("room", room);
+    if let Some(passcode) = code.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }) {
+        serializer.append_pair("code", passcode);
+    }
+    if let Some(file_name) = file.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    }) {
+        serializer.append_pair("file", file_name);
+    }
+    format!("hang://join?{}", serializer.finish())
+}
+
+fn html_escape(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+fn html_escape_attr(input: &str) -> String {
+    let mut escaped = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 async fn handle_message(
