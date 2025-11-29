@@ -178,15 +178,10 @@ async fn run_connection_loop(
                     return;
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to connect to {label} sync server at {url}: {}",
-                        e
-                    );
+                    tracing::warn!("Failed to connect to {label} sync server at {url}: {}", e);
                     update_connection_status(
                         &app_state,
-                        format!(
-                            "{label} sync server unavailable ({e}). Retrying with fallback..."
-                        ),
+                        format!("{label} sync server unavailable ({e}). Retrying with fallback..."),
                         Some(false),
                     );
                 }

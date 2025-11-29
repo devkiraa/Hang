@@ -15,6 +15,7 @@
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="ARPPRODUCTICON" Value="HangIcon" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
 
     <Icon Id="HangIcon" SourceFile="__CLIENT_EXE__" />
 
@@ -69,11 +70,18 @@
       </Component>
     </DirectoryRef>
 
-    <Feature Id="ProductFeature" Title="Hang" Level="1">
+    <Feature Id="ProductFeature" Title="Hang" Level="1" Display="expand">
       <ComponentRef Id="cmpHangClient" />
-      <ComponentRef Id="cmpStartMenuShortcut" />
-      <ComponentRef Id="cmpDesktopShortcut" />
       <ComponentGroupRef Id="VlcRuntimeGroup" />
+      <Feature Id="StartMenuFeature" Title="Start Menu Shortcut" Level="1" Absent="allow">
+        <ComponentRef Id="cmpStartMenuShortcut" />
+      </Feature>
+      <Feature Id="DesktopFeature" Title="Desktop Shortcut" Level="1" Absent="allow">
+        <ComponentRef Id="cmpDesktopShortcut" />
+      </Feature>
     </Feature>
+
+    <UIRef Id="WixUI_FeatureTree" />
+    <WixVariable Id="WixUILicenseRtf" Value="__LICENSE_RTF__" />
   </Product>
 </Wix>

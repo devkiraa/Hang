@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Thanks for Downloading - Hang</title>
     
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23ff8a00'/%3E%3Cpath d='M11 10 L23 16 L11 22 Z' fill='black'/%3E%3C/svg%3E">
+
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
@@ -113,6 +116,21 @@
             background: rgba(255, 255, 255, 0.1);
             border-color: rgba(255, 255, 255, 0.2);
         }
+        
+        .btn-mini {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #999;
+            font-size: 0.8rem;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            transition: all 0.2s ease;
+        }
+        .btn-mini:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: white;
+            border-color: rgba(255, 255, 255, 0.2);
+        }
 
         .text-glow {
             text-shadow: 0 0 40px rgba(255, 138, 0, 0.3);
@@ -147,7 +165,7 @@
         <div class="max-w-6xl mx-auto px-6">
             <div class="flex justify-between items-center h-20">
                 <!-- Brand -->
-                <a href="index.html" class="flex items-center gap-3 cursor-pointer group">
+                <a href="https://letshang.onrender.com/" class="flex items-center gap-3 cursor-pointer group">
                     <div class="w-8 h-8 bg-brand-500 text-black flex items-center justify-center rounded-lg text-sm font-bold shadow-[0_0_15px_rgba(255,138,0,0.4)] group-hover:scale-105 transition-transform">
                         <i class="fa-solid fa-play ml-0.5"></i>
                     </div>
@@ -156,15 +174,14 @@
 
                 <!-- Links -->
                 <div class="hidden md:flex items-center gap-8">
-                    <a href="index.html" class="text-sm font-medium text-brand-muted hover:text-white transition-colors">Back to Home</a>
+                    <a href="https://letshang.onrender.com/" class="text-sm font-medium text-brand-muted hover:text-white transition-colors">Back to Home</a>
                 </div>
             </div>
         </div>
     </nav>
 
     <!-- Main Content -->
-    <main class="flex-grow flex items-center justify-center relative pt-32 pb-20 px-6 z-10">
-        <!-- Increased max-width from max-w-xl to max-w-3xl to stretch the bar -->
+    <main class="flex-grow flex flex-col items-center justify-center relative pt-32 pb-20 px-6 z-10">
         <div class="max-w-3xl w-full text-center">
             
             <!-- Success Icon Animation -->
@@ -186,17 +203,17 @@
                 Thanks for downloading!
             </h1>
             
-            <p class="text-lg text-brand-muted mb-2 leading-relaxed">
-                Your download should start automatically.
+            <p id="download-status" class="text-lg text-brand-muted mb-2 leading-relaxed">
+                Checking for the latest version...
             </p>
             
-            <p class="text-sm text-brand-muted/60 mb-12 font-mono">
-                If not, <a href="#" onclick="alert('Retrying download...')" class="text-brand-500 hover:text-brand-400 hover:underline transition-colors cursor-pointer">click here to retry</a>
+            <p id="retry-container" class="text-sm text-brand-muted/60 mb-12 font-mono">
+                If it doesn't start, <a href="#" id="manual-download" class="text-brand-500 hover:text-brand-400 hover:underline transition-colors cursor-pointer">click here</a>
             </p>
 
             <!-- Support Card (Bento Style) -->
-            <div class="bento-card rounded-3xl p-8 md:p-10 text-left relative overflow-hidden group reveal active">
-                <!-- Decorative background elements for the card - Increased opacity and adjusted positioning -->
+            <div class="bento-card rounded-3xl p-8 md:p-10 text-left relative overflow-hidden group reveal active mb-12">
+                <!-- Decorative background elements for the card -->
                 <div class="absolute top-4 right-4 p-8 opacity-[0.1] group-hover:opacity-[0.15] transition-opacity">
                     <i class="fa-solid fa-mug-hot text-8xl md:text-9xl rotate-12"></i>
                 </div>
@@ -209,21 +226,33 @@
                         <h2 class="text-xl font-bold text-white">Support the Builder</h2>
                     </div>
                     
-                    <!-- Added max-width to text to prevent it from stretching too wide on the stretched card -->
                     <p class="text-brand-muted text-sm leading-relaxed mb-8 max-w-xl">
                         Hang is fully open-source and free. If you enjoy using it for your movie nights, consider buying me a coffee. It helps cover server costs and keeps the updates coming!
                     </p>
 
                     <div class="flex flex-col sm:flex-row gap-4">
-                        <a href="#" class="btn-coffee px-6 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 w-full sm:w-auto">
+                        <a href="https://buymeacoffee.com/devkiraa" target="_blank" class="btn-coffee px-6 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 w-full sm:w-auto">
                             <i class="fa-solid fa-mug-hot"></i>
                             <span>Buy me a coffee</span>
                         </a>
-                        <a href="index.html" class="btn-secondary px-6 py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-2 w-full sm:w-auto">
+                        <a href="https://letshang.onrender.com/" class="btn-secondary px-6 py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-2 w-full sm:w-auto">
                             <i class="fa-solid fa-arrow-left"></i>
                             <span>Back to Home</span>
                         </a>
                     </div>
+                </div>
+            </div>
+
+            <!-- Previous Releases Section -->
+            <div id="releases-container" class="hidden text-left reveal delay-200">
+                <div class="flex items-center gap-4 mb-6 px-2">
+                    <div class="h-px bg-white/10 flex-grow"></div>
+                    <span class="text-xs font-mono text-brand-muted uppercase tracking-widest">Previous Releases</span>
+                    <div class="h-px bg-white/10 flex-grow"></div>
+                </div>
+                
+                <div id="releases-list" class="grid gap-3">
+                    <!-- Release items will be injected here -->
                 </div>
             </div>
 
@@ -246,15 +275,104 @@
     </footer>
 
     <script>
-        // Simple reveal script matching index.html
         window.addEventListener('load', () => {
             document.querySelector('.reveal').classList.add('active');
-            
-            // Simulate Download
-            setTimeout(() => {
-                console.log('Download started...');
-            }, 1000);
+            fetchReleases();
         });
+
+        const repoOwner = 'devkiraa';
+        const repoName = 'Hang';
+
+        async function fetchReleases() {
+            const statusEl = document.getElementById('download-status');
+            const manualLink = document.getElementById('manual-download');
+            const retryContainer = document.getElementById('retry-container');
+            
+            try {
+                const response = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/releases`);
+                if (!response.ok) throw new Error('GitHub API limit or error');
+                
+                const releases = await response.json();
+                
+                if (!releases || releases.length === 0) {
+                    statusEl.textContent = "No releases found.";
+                    return;
+                }
+
+                // 1. Handle Latest Release
+                const latest = releases[0];
+                const latestAsset = latest.assets.find(a => a.name.endsWith('.msi')) || 
+                                    latest.assets.find(a => a.name.endsWith('.exe')) || 
+                                    latest.assets[0];
+
+                if (latestAsset) {
+                    statusEl.innerHTML = `Downloading <span class="text-brand-500 font-mono">${latest.tag_name}</span> automatically...`;
+                    manualLink.href = latestAsset.browser_download_url;
+                    manualLink.textContent = "click here manually";
+                    manualLink.onclick = null; 
+                    
+                    // Auto download after 1.5s
+                    setTimeout(() => {
+                        window.location.href = latestAsset.browser_download_url;
+                        
+                        // Update UI to show Retry state
+                        statusEl.innerHTML = `Download started for <span class="text-brand-500 font-mono">${latest.tag_name}</span>`;
+                        retryContainer.innerHTML = `Download didn't start? <a href="${latestAsset.browser_download_url}" class="text-brand-500 font-bold hover:text-brand-400 hover:underline transition-colors cursor-pointer">Retry Download</a>`;
+                    }, 1500);
+                } else {
+                    statusEl.textContent = "Latest release has no downloadable assets.";
+                }
+
+                // 2. Handle Previous Releases
+                const olderReleases = releases.slice(1);
+                if (olderReleases.length > 0) {
+                    const container = document.getElementById('releases-container');
+                    const list = document.getElementById('releases-list');
+                    container.classList.remove('hidden');
+
+                    olderReleases.forEach(release => {
+                        const asset = release.assets.find(a => a.name.endsWith('.msi')) || 
+                                      release.assets.find(a => a.name.endsWith('.exe')) || 
+                                      release.assets[0];
+                        
+                        if (!asset) return;
+
+                        const date = new Date(release.published_at).toLocaleDateString();
+                        const size = asset.size ? (asset.size / (1024 * 1024)).toFixed(1) + ' MB' : 'Unknown';
+
+                        const item = document.createElement('div');
+                        item.className = 'flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all';
+                        item.innerHTML = `
+                            <div class="flex flex-col">
+                                <span class="font-mono font-bold text-white text-sm">${release.tag_name}</span>
+                                <span class="text-xs text-brand-muted mt-0.5">Released ${date}</span>
+                            </div>
+                            <div class="flex items-center gap-4">
+                                <span class="text-xs text-brand-muted hidden sm:block">${size}</span>
+                                <a href="${asset.browser_download_url}" class="btn-mini flex items-center gap-2">
+                                    <i class="fa-solid fa-download"></i>
+                                    Download
+                                </a>
+                            </div>
+                        `;
+                        list.appendChild(item);
+                    });
+                }
+
+            } catch (error) {
+                console.error('Fetch error:', error);
+                // Fallback Logic
+                statusEl.textContent = "Download should start shortly...";
+                const fallbackUrl = "https://github.com/devkiraa/Hang/releases/download/v1.0.0/Hang.0.0.0.msi";
+                manualLink.href = fallbackUrl;
+                manualLink.onclick = null;
+                
+                setTimeout(() => {
+                    window.location.href = fallbackUrl;
+                    retryContainer.innerHTML = `Download didn't start? <a href="${fallbackUrl}" class="text-brand-500 font-bold hover:text-brand-400 hover:underline transition-colors cursor-pointer">Retry Download</a>`;
+                }, 1500);
+            }
+        }
     </script>
 </body>
 </html>

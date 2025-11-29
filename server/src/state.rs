@@ -17,6 +17,10 @@ pub struct ServerState {
     pub clients: Arc<DashMap<Uuid, ClientInfo>>,
     /// Room membership: room_id -> Vec<client_id>
     pub room_members: Arc<DashMap<String, Arc<RwLock<Vec<Uuid>>>>>,
+    /// Resume tokens issued for reconnect support
+    resume_tokens: Arc<DashMap<String, ResumeRecord>>,
+    /// Mapping of client id to the last token we issued
+    client_tokens: Arc<DashMap<Uuid, String>>,
 }
 
 impl ServerState {
@@ -25,6 +29,8 @@ impl ServerState {
             rooms: Arc::new(DashMap::new()),
             clients: Arc::new(DashMap::new()),
             room_members: Arc::new(DashMap::new()),
+            resume_tokens: Arc::new(DashMap::new()),
+            client_tokens: Arc::new(DashMap::new()),
         }
     }
 
@@ -63,7 +69,7 @@ impl ServerState {
         room_id: &str,
         file_hash: &str,
         passcode: Option<String>,
-    ) -> Result<bool, String> {
+    ) -> Result<(bool, String), String> {
         // Check if room exists
         let room = self
             .rooms
@@ -87,6 +93,7 @@ impl ServerState {
         }
 
         let is_host = room.host_id == client_id;
+        let canonical_hash = room.file_hash.clone();
         drop(room);
 
         // Add client to room members
@@ -103,7 +110,7 @@ impl ServerState {
         }
 
         tracing::info!("{LOG_TAG} Client {} joined room {}", client_id, room_id);
-        Ok(is_host)
+        Ok((is_host, canonical_hash))
     }
 
     pub async fn leave_room(&self, client_id: Uuid) -> Option<String> {
@@ -121,6 +128,7 @@ impl ServerState {
                     drop(members);
                     self.room_members.remove(&room_id);
                     self.rooms.remove(&room_id);
+                    self.clear_tokens_for_room(&room_id);
                     tracing::info!("{LOG_TAG} Room {} deleted (empty)", room_id);
                     return Some(room_id);
                 }
@@ -160,6 +168,113 @@ impl ServerState {
         tracing::info!("{LOG_TAG} Client {} disconnected", client_id);
     }
 
+    pub fn remember_session(
+        &self,
+        client_id: Uuid,
+        room_id: &str,
+        file_hash: &str,
+        was_host: bool,
+    ) -> String {
+        let token = Uuid::new_v4().to_string();
+        if let Some(previous) = self.client_tokens.insert(client_id, token.clone()) {
+            self.resume_tokens.remove(&previous);
+        }
+
+        self.resume_tokens.insert(
+            token.clone(),
+            ResumeRecord {
+                client_id,
+                room_id: room_id.to_string(),
+                file_hash: file_hash.to_string(),
+                was_host,
+            },
+        );
+
+        token
+    }
+
+    pub fn clear_session(&self, client_id: Uuid) {
+        if let Some((_, token)) = self.client_tokens.remove(&client_id) {
+            self.resume_tokens.remove(&token);
+        }
+    }
+
+    fn clear_tokens_for_room(&self, room_id: &str) {
+        let tokens: Vec<String> = self
+            .resume_tokens
+            .iter()
+            .filter_map(|entry| {
+                if entry.value().room_id == room_id {
+                    Some(entry.key().clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for token in tokens {
+            if let Some((_, record)) = self.resume_tokens.remove(&token) {
+                self.client_tokens.remove(&record.client_id);
+            }
+        }
+    }
+
+    pub async fn resume_session(
+        &self,
+        client_id: Uuid,
+        token: &str,
+    ) -> Result<ResumeOutcome, String> {
+        let record = self
+            .resume_tokens
+            .remove(token)
+            .map(|(_, rec)| rec)
+            .ok_or_else(|| "Session token invalid or expired".to_string())?;
+        self.client_tokens.remove(&record.client_id);
+
+        let passcode_enabled = self
+            .rooms
+            .get(&record.room_id)
+            .map(|room| room.passcode_hash.is_some())
+            .ok_or_else(|| "Room not found".to_string())?;
+
+        if record.was_host {
+            if let Some(mut room) = self.rooms.get_mut(&record.room_id) {
+                room.host_id = client_id;
+            }
+        }
+
+        if let Some(members) = self.room_members.get(&record.room_id) {
+            let mut members = members.write().await;
+            if !members.contains(&client_id) {
+                members.push(client_id);
+            }
+        } else {
+            return Err("Room is no longer active".to_string());
+        }
+
+        self.clients.insert(
+            client_id,
+            ClientInfo {
+                room_id: Some(record.room_id.clone()),
+            },
+        );
+
+        let new_token = self.remember_session(
+            client_id,
+            &record.room_id,
+            &record.file_hash,
+            record.was_host,
+        );
+
+        Ok(ResumeOutcome {
+            room_id: record.room_id,
+            was_host: record.was_host,
+            passcode_enabled,
+            resume_token: new_token,
+            file_hash: record.file_hash,
+        })
+    }
+
     fn generate_room_code(&self) -> String {
         loop {
             let raw = (Uuid::new_v4().as_u128() % 1_000_000) as u32;
@@ -177,4 +292,20 @@ impl ServerState {
         let digest = hasher.finalize();
         format!("{:x}", digest)
     }
+}
+
+#[derive(Clone)]
+pub struct ResumeRecord {
+    pub client_id: Uuid,
+    pub room_id: String,
+    pub file_hash: String,
+    pub was_host: bool,
+}
+
+pub struct ResumeOutcome {
+    pub room_id: String,
+    pub was_host: bool,
+    pub passcode_enabled: bool,
+    pub resume_token: String,
+    pub file_hash: String,
 }

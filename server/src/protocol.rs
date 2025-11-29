@@ -15,6 +15,9 @@ pub enum Message {
         file_hash: String,
         passcode: Option<String>,
     },
+    ResumeSession {
+        token: String,
+    },
     LeaveRoom,
     SyncCommand(SyncCommand),
 
@@ -23,12 +26,16 @@ pub enum Message {
         room_id: String,
         client_id: Uuid,
         passcode_enabled: bool,
+        file_hash: String,
+        resume_token: String,
     },
     RoomJoined {
         room_id: String,
         client_id: Uuid,
         is_host: bool,
         passcode_enabled: bool,
+        file_hash: String,
+        resume_token: String,
     },
     RoomLeft,
     RoomNotFound,

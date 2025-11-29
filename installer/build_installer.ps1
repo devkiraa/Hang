@@ -67,6 +67,8 @@ $template = Get-Content $wxsTemplate -Raw
 $rendered = $template.Replace('__PRODUCT_VERSION__', $normalizedVersion)
 $rendered = $rendered.Replace('__CLIENT_EXE__', (EscapeXml -Value $exePath))
 $rendered = $rendered.Replace('__PAYLOAD_DIR__', (EscapeXml -Value $payloadRoot))
+$licensePath = (Resolve-Path (Join-Path $PSScriptRoot 'license.rtf')).ProviderPath
+$rendered = $rendered.Replace('__LICENSE_RTF__', (EscapeXml -Value $licensePath))
 Set-Content -Path $wxsGenerated -Value $rendered -Encoding UTF8
 
 if ([System.IO.Path]::IsPathRooted($Output)) {

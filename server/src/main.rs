@@ -1,24 +1,22 @@
 use axum::{
     extract::{
         ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
-        Path,
-        Query,
-        State,
+        Path, Query, State,
     },
     response::{Html, IntoResponse},
     routing::get,
     Router,
 };
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, RwLock};
-use uuid::Uuid;
-use serde::Deserialize;
 use url::form_urlencoded;
+use uuid::Uuid;
 
 mod protocol;
 mod state;
@@ -174,11 +172,7 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
     send_task.abort();
 }
 
-fn render_join_page(
-    room: Option<String>,
-    code: Option<String>,
-    file: Option<String>,
-) -> String {
+fn render_join_page(room: Option<String>, code: Option<String>, file: Option<String>) -> String {
     let room = room.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
@@ -219,7 +213,9 @@ fn render_join_page(
                 html_escape(value)
             )
         })
-        .unwrap_or_else(|| "<div class=\"info muted\">No passcode included in this invite.</div>".to_string());
+        .unwrap_or_else(|| {
+            "<div class=\"info muted\">No passcode included in this invite.</div>".to_string()
+        });
 
     let file_block = file
         .as_ref()
@@ -229,7 +225,9 @@ fn render_join_page(
                 html_escape(value)
             )
         })
-        .unwrap_or_else(|| "<div class=\"info muted\">Host did not specify a file name.</div>".to_string());
+        .unwrap_or_else(|| {
+            "<div class=\"info muted\">Host did not specify a file name.</div>".to_string()
+        });
 
     let protocol_url = room
         .as_ref()
@@ -251,7 +249,8 @@ fn render_join_page(
     let auto_launch_script = protocol_url
         .as_ref()
         .map(|url| {
-            let js_url = serde_json::to_string(url).unwrap_or_else(|_| "\"hang://join\"".to_string());
+            let js_url =
+                serde_json::to_string(url).unwrap_or_else(|_| "\"hang://join\"".to_string());
             format!(
                 "<script>setTimeout(function(){{window.location.href={};}}, 450);</script>",
                 js_url
@@ -431,12 +430,16 @@ async fn handle_message(
             file_hash,
             passcode,
         } => {
+            let canonical_hash = file_hash.clone();
             let (room_id, passcode_enabled) = state.create_room(client_id, file_hash, passcode);
+            let resume_token = state.remember_session(client_id, &room_id, &canonical_hash, true);
             if let Some(tx) = client_senders.read().await.get(&client_id) {
                 let _ = tx.send(Message::RoomCreated {
                     room_id: room_id.clone(),
                     client_id,
                     passcode_enabled,
+                    file_hash: canonical_hash,
+                    resume_token,
                 });
             }
             broadcast_member_count(&state, client_senders, &room_id).await;
@@ -451,16 +454,22 @@ async fn handle_message(
                 .join_room(client_id, &room_id, &file_hash, passcode)
                 .await
             {
-                Ok(is_host) => Message::RoomJoined {
-                    room_id: room_id.clone(),
-                    client_id,
-                    is_host,
-                    passcode_enabled: state
-                        .rooms
-                        .get(&room_id)
-                        .map(|room| room.passcode_hash.is_some())
-                        .unwrap_or(false),
-                },
+                Ok((is_host, canonical_hash)) => {
+                    let resume_token =
+                        state.remember_session(client_id, &room_id, &canonical_hash, is_host);
+                    Message::RoomJoined {
+                        room_id: room_id.clone(),
+                        client_id,
+                        is_host,
+                        passcode_enabled: state
+                            .rooms
+                            .get(&room_id)
+                            .map(|room| room.passcode_hash.is_some())
+                            .unwrap_or(false),
+                        file_hash: canonical_hash,
+                        resume_token,
+                    }
+                }
                 Err(e) if e.contains("not found") => Message::RoomNotFound,
                 Err(e) if e.contains("mismatch") => {
                     let room = state.rooms.get(&room_id);
@@ -481,8 +490,30 @@ async fn handle_message(
             if let Some(room_id) = state.leave_room(client_id).await {
                 broadcast_member_count(&state, client_senders, &room_id).await;
             }
+            state.clear_session(client_id);
             if let Some(tx) = client_senders.read().await.get(&client_id) {
                 let _ = tx.send(Message::RoomLeft);
+            }
+        }
+        Message::ResumeSession { token } => {
+            let response = state.resume_session(client_id, &token).await;
+            if let Some(tx) = client_senders.read().await.get(&client_id) {
+                match response {
+                    Ok(outcome) => {
+                        let _ = tx.send(Message::RoomJoined {
+                            room_id: outcome.room_id.clone(),
+                            client_id,
+                            is_host: outcome.was_host,
+                            passcode_enabled: outcome.passcode_enabled,
+                            file_hash: outcome.file_hash.clone(),
+                            resume_token: outcome.resume_token.clone(),
+                        });
+                        broadcast_member_count(&state, client_senders, &outcome.room_id).await;
+                    }
+                    Err(err) => {
+                        let _ = tx.send(Message::Error { message: err });
+                    }
+                }
             }
         }
 

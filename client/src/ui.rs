@@ -5,11 +5,10 @@ use std::sync::Arc;
 use tokio::sync::mpsc::{error::TryRecvError, UnboundedReceiver, UnboundedSender};
 
 use crate::{
-    constants::{LOCAL_WS_URL, RENDER_WS_URL},
     invite::{self, InviteLink, InviteSignal},
     player::{VideoFrame, VideoPlayer},
     protocol::{Message, SyncCommand},
-    sync::SyncClient,
+    sync::{PersistedSession, SyncClient},
     utils::{compute_file_hash, format_time},
 };
 
@@ -27,7 +26,6 @@ pub struct HangApp {
     // UI state
     video_file: Option<PathBuf>,
     video_hash: Option<String>,
-    server_url: String,
     room_id_input: String,
     create_passcode_input: String,
     join_passcode_input: String,
@@ -68,6 +66,9 @@ pub struct HangApp {
     pending_invite: Option<InviteLink>,
     invite_modal_open: bool,
     sync_reconnect_tx: Option<UnboundedSender<()>>,
+    saved_session: Option<PersistedSession>,
+    auto_resume_attempted: bool,
+    resume_in_progress: bool,
 
     // Video rendering
     video_texture: Option<egui::TextureHandle>,
@@ -82,12 +83,12 @@ impl HangApp {
         invite_rx: UnboundedReceiver<InviteSignal>,
         sync_reconnect_tx: UnboundedSender<()>,
     ) -> Self {
+        let cached_session = sync.saved_session();
         Self {
             player,
             sync,
             video_file: None,
             video_hash: None,
-            server_url: LOCAL_WS_URL.to_string(),
             room_id_input: String::new(),
             create_passcode_input: String::new(),
             join_passcode_input: String::new(),
@@ -121,6 +122,9 @@ impl HangApp {
             pending_invite: None,
             invite_modal_open: false,
             sync_reconnect_tx: Some(sync_reconnect_tx),
+            saved_session: cached_session,
+            auto_resume_attempted: false,
+            resume_in_progress: false,
             video_texture: None,
             last_frame_size: None,
         }
@@ -231,6 +235,72 @@ impl HangApp {
             self.sync_connected = false;
             self.status_message = "Retrying sync connection...".into();
         }
+    }
+
+    fn attempt_resume(&mut self, automatic: bool) {
+        let Some(session) = self.saved_session.clone() else {
+            return;
+        };
+        if automatic && self.auto_resume_attempted {
+            return;
+        }
+        if !self.sync_connected {
+            if !automatic {
+                self.error_message =
+                    Some("Cannot resume until the sync server connection is ready".into());
+            }
+            return;
+        }
+        match self.sync.resume_session(session.resume_token.clone()) {
+            Ok(_) => {
+                self.status_message = format!("Attempting to resume room {}...", session.room_id);
+                self.resume_in_progress = true;
+                if automatic {
+                    self.auto_resume_attempted = true;
+                }
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Failed to resume session: {}", e));
+            }
+        }
+    }
+
+    fn maybe_auto_resume(&mut self) {
+        if self.in_room || self.resume_in_progress {
+            return;
+        }
+        if self.saved_session.is_none() || !self.sync_connected {
+            return;
+        }
+        self.attempt_resume(true);
+    }
+
+    fn remember_session(
+        &mut self,
+        room_id: String,
+        resume_token: String,
+        file_hash: String,
+        is_host: bool,
+    ) {
+        let session = PersistedSession {
+            room_id,
+            resume_token,
+            file_hash,
+            is_host,
+        };
+        if let Err(e) = self.sync.persist_session(&session) {
+            self.error_message = Some(format!("Failed to cache session: {}", e));
+        }
+        self.saved_session = Some(session);
+        self.auto_resume_attempted = false;
+        self.resume_in_progress = false;
+    }
+
+    fn clear_saved_session(&mut self) {
+        let _ = self.sync.clear_persisted_session();
+        self.saved_session = None;
+        self.auto_resume_attempted = false;
+        self.resume_in_progress = false;
     }
 
     fn process_invite_signal(&mut self, signal: InviteSignal) {
@@ -382,6 +452,8 @@ impl HangApp {
                 room_id,
                 client_id,
                 passcode_enabled,
+                file_hash,
+                resume_token,
             } => {
                 self.sync.set_room_joined(room_id.clone(), client_id, true);
                 self.in_room = true;
@@ -389,7 +461,7 @@ impl HangApp {
                 self.is_host = true;
                 self.participant_count = 1;
                 self.status_message = format!("Room created: {}", room_id);
-                self.room_id_input = room_id;
+                self.room_id_input = room_id.clone();
                 self.invite_modal_open = false;
                 self.pending_invite = None;
                 self.room_has_passcode = passcode_enabled;
@@ -402,12 +474,15 @@ impl HangApp {
                 if passcode_enabled {
                     self.create_passcode_input.clear();
                 }
+                self.remember_session(room_id.clone(), resume_token, file_hash, true);
             }
             Message::RoomJoined {
                 room_id,
                 client_id,
                 is_host,
                 passcode_enabled,
+                file_hash,
+                resume_token,
             } => {
                 self.sync
                     .set_room_joined(room_id.clone(), client_id, is_host);
@@ -432,6 +507,7 @@ impl HangApp {
                 if !is_host {
                     self.join_passcode_input.clear();
                 }
+                self.remember_session(room_id, resume_token, file_hash, is_host);
             }
             Message::RoomLeft => {
                 self.sync.clear_room();
@@ -445,11 +521,14 @@ impl HangApp {
                 self.pending_room_passcode = None;
                 self.pending_invite = None;
                 self.invite_modal_open = false;
+                self.clear_saved_session();
             }
             Message::RoomNotFound => {
+                self.resume_in_progress = false;
                 self.error_message = Some("Room not found".to_string());
             }
             Message::FileHashMismatch { expected } => {
+                self.resume_in_progress = false;
                 self.error_message =
                     Some(format!("File mismatch! Expected hash: {}", &expected[..16]));
             }
@@ -459,6 +538,10 @@ impl HangApp {
                 }
             }
             Message::Error { message } => {
+                if message.contains("Session token") {
+                    self.clear_saved_session();
+                }
+                self.resume_in_progress = false;
                 self.error_message = Some(message);
             }
             Message::RoomMemberUpdate { room_id, members } => {
@@ -640,11 +723,6 @@ impl HangApp {
             .open(&mut dialog_open)
             .collapsible(false)
             .show(ctx, |ui| {
-                ui.label("Server URL:");
-                ui.text_edit_singleline(&mut self.server_url);
-                ui.small(format!("Fallback: {}", RENDER_WS_URL));
-                ui.separator();
-
                 if let Some(code) = self.current_room_id.clone() {
                     ui.label(format!("Current room: {}", code));
                     ui.horizontal(|ui| {
@@ -732,6 +810,28 @@ impl HangApp {
                         }
                         ui.label("Format: 123-456");
                     });
+
+                    if let Some(session) = self.saved_session.as_ref() {
+                        ui.add_space(8.0);
+                        ui.separator();
+                        let preview_len = session.file_hash.len().min(8);
+                        let hash_preview = &session.file_hash[..preview_len];
+                        ui.colored_label(
+                            egui::Color32::LIGHT_GREEN,
+                            format!(
+                                "Last room {} (hash {}...)",
+                                session.room_id,
+                                hash_preview
+                            ),
+                        );
+                        let resume_enabled = self.sync_connected && !self.resume_in_progress;
+                        if ui
+                            .add_enabled(resume_enabled, egui::Button::new("Resume last session"))
+                            .clicked()
+                        {
+                            self.attempt_resume(false);
+                        }
+                    }
                 }
 
                 ui.separator();
@@ -935,6 +1035,7 @@ impl eframe::App for HangApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
         }
         self.update_control_visibility(ctx);
+        self.maybe_auto_resume();
         let show_chrome = !self.is_fullscreen || self.controls_visible;
 
         // Top menu bar
@@ -961,6 +1062,16 @@ impl eframe::App for HangApp {
                         if !self.sync_connected {
                             if ui.button("Retry Connection").clicked() {
                                 self.request_manual_reconnect();
+                            }
+                        } else if !self.in_room {
+                            if let Some(session) = self.saved_session.as_ref() {
+                                let label = format!("Resume {}", session.room_id);
+                                if ui
+                                    .add_enabled(!self.resume_in_progress, egui::Button::new(label))
+                                    .clicked()
+                                {
+                                    self.attempt_resume(false);
+                                }
                             }
                         }
                     });
@@ -1057,9 +1168,7 @@ impl eframe::App for HangApp {
                 }
 
                 ui.add_space(4.0);
-                ui.small(
-                    "Keys: Space toggles playback · ←/→ seek 5s · ↑/↓ volume · F fullscreen",
-                );
+                ui.small("Keys: Space toggles playback · ←/→ seek 5s · ↑/↓ volume · F fullscreen");
             });
         }
 
@@ -1123,32 +1232,32 @@ impl eframe::App for HangApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
-            if let Some(texture) = &self.video_texture {
-                let available = ui.available_size();
-                let draw_size = self.fitted_video_size(available);
-                ui.allocate_ui_with_layout(
-                    available,
-                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                    |ui| {
-                        ui.image((texture.id(), draw_size));
-                    },
-                );
-            } else {
-                ui.centered_and_justified(|ui| {
-                    if self.video_file.is_none() {
-                        self.draw_logo(ui);
-                        ui.add_space(8.0);
-                        ui.label("Open a video file to begin");
-                        ui.add_space(10.0);
-                        if ui.button("Open Video").clicked() {
-                            self.select_video_file();
+                if let Some(texture) = &self.video_texture {
+                    let available = ui.available_size();
+                    let draw_size = self.fitted_video_size(available);
+                    ui.allocate_ui_with_layout(
+                        available,
+                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                        |ui| {
+                            ui.image((texture.id(), draw_size));
+                        },
+                    );
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        if self.video_file.is_none() {
+                            self.draw_logo(ui);
+                            ui.add_space(8.0);
+                            ui.label("Open a video file to begin");
+                            ui.add_space(10.0);
+                            if ui.button("Open Video").clicked() {
+                                self.select_video_file();
+                            }
+                            ui.label("…or drag & drop a file anywhere in this window");
+                        } else {
+                            ui.heading("Loading video...");
                         }
-                        ui.label("…or drag & drop a file anywhere in this window");
-                    } else {
-                        ui.heading("Loading video...");
-                    }
-                });
-            }
+                    });
+                }
             });
 
         // Request continuous repaint for smooth updates
