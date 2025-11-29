@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="scroll-smooth">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -35,6 +35,7 @@
                     },
                     animation: {
                         'float': 'float 6s ease-in-out infinite',
+                        'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
                     },
                     keyframes: {
                         float: {
@@ -47,12 +48,17 @@
         }
     </script>
     <style>
+        /* Modern Reset & Base */
         body {
             background-color: #080808;
             color: #ececec;
             background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.03'/%3E%3C/svg%3E");
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
         }
 
+        /* Engineered Grid Background */
         .bg-grid {
             background-size: 40px 40px;
             background-image: linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
@@ -61,76 +67,194 @@
             -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
         }
 
-        .glass-card {
-            background: linear-gradient(180deg, rgba(24, 24, 27, 0.8) 0%, rgba(18, 18, 20, 0.6) 100%);
-            border: 1px solid rgba(255, 255, 255, 0.08);
+        /* Card Styles */
+        .glass {
+            background: rgba(18, 18, 18, 0.7);
             backdrop-filter: blur(12px);
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         }
         
-        .coffee-btn {
+        .bento-card {
+            background: linear-gradient(180deg, rgba(24, 24, 27, 0.6) 0%, rgba(18, 18, 20, 0.4) 100%);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(10px);
+            transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1), border-color 0.3s ease;
+        }
+
+        .bento-card:hover {
+            border-color: rgba(255, 138, 0, 0.3);
+            transform: translateY(-2px);
+        }
+
+        h1, h2, h3, h4 {
+            letter-spacing: -0.02em;
+        }
+        
+        /* Button Styles */
+        .btn-coffee {
             background: #FFDD00;
             color: #000;
+            border: 1px solid #e6c700;
             transition: all 0.2s ease;
         }
-        .coffee-btn:hover {
-            background: #FFEA00;
-            transform: translateY(-2px);
-            box-shadow: 0 10px 25px -5px rgba(255, 221, 0, 0.4);
+        .btn-coffee:hover {
+            background: #ffe600;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 20px rgba(255, 221, 0, 0.2);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #ececec;
+        }
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .text-glow {
+            text-shadow: 0 0 40px rgba(255, 138, 0, 0.3);
+        }
+
+        ::selection {
+            background: rgba(255, 138, 0, 0.3);
+            color: #fff;
+        }
+        
+        .reveal {
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .reveal.active {
+            opacity: 1;
+            transform: translateY(0);
         }
     </style>
 </head>
-<body class="antialiased h-screen flex flex-col overflow-hidden relative">
+<body class="antialiased overflow-x-hidden">
 
-    <!-- Background Elements -->
-    <div class="fixed inset-0 bg-grid pointer-events-none z-0"></div>
-    <div class="fixed top-0 left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-brand-500/10 blur-[120px] rounded-full pointer-events-none z-0 opacity-40"></div>
+    <!-- Grid Background Layer -->
+    <div class="fixed inset-0 bg-grid pointer-events-none z-0 h-[80vh]"></div>
+
+    <!-- Ambient Spotlights -->
+    <div class="fixed top-0 left-1/2 -translate-x-1/2 w-[800px] h-[500px] bg-brand-500/10 blur-[120px] rounded-full pointer-events-none z-0 opacity-60"></div>
+
+    <!-- Navbar -->
+    <nav class="fixed w-full z-50 transition-all duration-300 backdrop-blur-md border-b border-white/5" id="navbar">
+        <div class="max-w-6xl mx-auto px-6">
+            <div class="flex justify-between items-center h-20">
+                <!-- Brand -->
+                <a href="index.html" class="flex items-center gap-3 cursor-pointer group">
+                    <div class="w-8 h-8 bg-brand-500 text-black flex items-center justify-center rounded-lg text-sm font-bold shadow-[0_0_15px_rgba(255,138,0,0.4)] group-hover:scale-105 transition-transform">
+                        <i class="fa-solid fa-play ml-0.5"></i>
+                    </div>
+                    <span class="font-bold text-xl tracking-tight">Hang</span>
+                </a>
+
+                <!-- Links -->
+                <div class="hidden md:flex items-center gap-8">
+                    <a href="index.html" class="text-sm font-medium text-brand-muted hover:text-white transition-colors">Back to Home</a>
+                </div>
+            </div>
+        </div>
+    </nav>
 
     <!-- Main Content -->
-    <main class="flex-grow flex items-center justify-center p-6 relative z-10">
-        <div class="max-w-2xl w-full text-center">
+    <main class="flex-grow flex items-center justify-center relative pt-32 pb-20 px-6 z-10">
+        <!-- Increased max-width from max-w-xl to max-w-3xl to stretch the bar -->
+        <div class="max-w-3xl w-full text-center">
             
-            <!-- Success Icon -->
-            <div class="mb-8 animate-float">
-                <div class="w-24 h-24 mx-auto bg-green-500/10 rounded-full flex items-center justify-center border border-green-500/20">
-                    <i class="fa-solid fa-check text-4xl text-green-500"></i>
+            <!-- Success Icon Animation -->
+            <div class="inline-block mb-8 animate-float">
+                <div class="relative w-24 h-24 mx-auto">
+                    <!-- Glow -->
+                    <div class="absolute inset-0 bg-green-500/20 blur-xl rounded-full"></div>
+                    <!-- Icon Container -->
+                    <div class="relative w-full h-full bg-[#050505] border border-green-500/30 rounded-2xl flex items-center justify-center shadow-2xl">
+                        <i class="fa-solid fa-check text-4xl text-green-500"></i>
+                    </div>
+                    <!-- Decorative dots -->
+                    <div class="absolute -top-2 -right-2 w-4 h-4 bg-green-500 rounded-full border-2 border-[#080808]"></div>
+                    <div class="absolute -bottom-1 -left-1 w-2 h-2 bg-green-500/50 rounded-full"></div>
                 </div>
             </div>
 
-            <h1 class="text-4xl md:text-5xl font-bold text-white mb-6">Thanks for downloading!</h1>
-            <p class="text-xl text-brand-muted mb-2">Your download should start automatically.</p>
-            <p class="text-sm text-brand-muted/50 mb-12">If it doesn't, <a href="#" onclick="alert('Starting download...')" class="text-brand-500 hover:underline">click here</a> to restart.</p>
+            <h1 class="text-4xl md:text-5xl font-bold tracking-tighter mb-4 text-white text-glow">
+                Thanks for downloading!
+            </h1>
+            
+            <p class="text-lg text-brand-muted mb-2 leading-relaxed">
+                Your download should start automatically.
+            </p>
+            
+            <p class="text-sm text-brand-muted/60 mb-12 font-mono">
+                If not, <a href="#" onclick="alert('Retrying download...')" class="text-brand-500 hover:text-brand-400 hover:underline transition-colors cursor-pointer">click here to retry</a>
+            </p>
 
-            <!-- Support Section -->
-            <div class="glass-card rounded-3xl p-10 border-t-4 border-t-[#FFDD00]">
-                <h2 class="text-2xl font-bold text-white mb-4">Enjoying Hang?</h2>
-                <p class="text-brand-muted mb-8 leading-relaxed">
-                    Hang is completely free and open source. If you like what I've built and want to support server costs (or just fuel my caffeine addiction), consider buying me a coffee. It means the world!
-                </p>
+            <!-- Support Card (Bento Style) -->
+            <div class="bento-card rounded-3xl p-8 md:p-10 text-left relative overflow-hidden group reveal active">
+                <!-- Decorative background elements for the card - Increased opacity and adjusted positioning -->
+                <div class="absolute top-4 right-4 p-8 opacity-[0.1] group-hover:opacity-[0.15] transition-opacity">
+                    <i class="fa-solid fa-mug-hot text-8xl md:text-9xl rotate-12"></i>
+                </div>
 
-                <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
-                    <a href="#" class="coffee-btn px-8 py-4 rounded-xl font-bold text-lg flex items-center gap-3 w-full sm:w-auto justify-center">
-                        <i class="fa-solid fa-mug-hot"></i>
-                        <span>Buy me a coffee</span>
-                    </a>
-                    <a href="index.html" class="px-8 py-4 rounded-xl font-medium text-brand-muted hover:text-white hover:bg-white/5 transition-colors w-full sm:w-auto">
-                        Back to Home
-                    </a>
+                <div class="relative z-10">
+                    <div class="flex items-center gap-4 mb-6">
+                        <div class="w-10 h-10 rounded-xl bg-[#FFDD00]/10 flex items-center justify-center border border-[#FFDD00]/20 text-[#FFDD00]">
+                            <i class="fa-solid fa-heart"></i>
+                        </div>
+                        <h2 class="text-xl font-bold text-white">Support the Builder</h2>
+                    </div>
+                    
+                    <!-- Added max-width to text to prevent it from stretching too wide on the stretched card -->
+                    <p class="text-brand-muted text-sm leading-relaxed mb-8 max-w-xl">
+                        Hang is fully open-source and free. If you enjoy using it for your movie nights, consider buying me a coffee. It helps cover server costs and keeps the updates coming!
+                    </p>
+
+                    <div class="flex flex-col sm:flex-row gap-4">
+                        <a href="#" class="btn-coffee px-6 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 w-full sm:w-auto">
+                            <i class="fa-solid fa-mug-hot"></i>
+                            <span>Buy me a coffee</span>
+                        </a>
+                        <a href="index.html" class="btn-secondary px-6 py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-2 w-full sm:w-auto">
+                            <i class="fa-solid fa-arrow-left"></i>
+                            <span>Back to Home</span>
+                        </a>
+                    </div>
                 </div>
             </div>
 
         </div>
     </main>
 
-    <!-- Auto Download Simulation -->
+    <!-- Footer -->
+    <footer class="border-t border-white/5 py-8 bg-[#050505] relative z-10">
+        <div class="max-w-6xl mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-4 text-sm text-brand-muted">
+            <div class="flex items-center gap-2 opacity-60">
+                <span class="font-bold">Hang</span>
+                <span>© 2023</span>
+            </div>
+            
+            <div class="flex gap-6">
+                <a href="#" class="hover:text-white transition-colors">Twitter</a>
+                <a href="https://github.com/devkiraa/Hang" class="hover:text-white transition-colors">GitHub</a>
+            </div>
+        </div>
+    </footer>
+
     <script>
-        window.onload = function() {
+        // Simple reveal script matching index.html
+        window.addEventListener('load', () => {
+            document.querySelector('.reveal').classList.add('active');
+            
+            // Simulate Download
             setTimeout(() => {
-                console.log("Download started...");
-                // In a real scenario, this would trigger the file download
-                // window.location.href = 'path/to/hang-installer.exe';
-            }, 1500);
-        }
+                console.log('Download started...');
+            }, 1000);
+        });
     </script>
 </body>
 </html>
