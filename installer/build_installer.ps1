@@ -84,14 +84,15 @@ if (-not (Test-Path $outputDirectory)) {
 $candle = (Get-Command candle.exe).Path
 $light = (Get-Command light.exe).Path
 $heat = (Get-Command heat.exe).Path
+$wixExtensions = @('-ext', 'WixUIExtension')
 
-& $heat dir $runtimeDir -cg VlcRuntimeGroup -dr VlcInstallDir -srd -gg -var var.RuntimeSourceDir -out $heatFragment
+& $heat dir $runtimeDir -cg VlcRuntimeGroup -dr VlcInstallDir -srd -sreg 0 -gg -var var.RuntimeSourceDir -out $heatFragment
 
 try {
     $runtimeDefine = "-dRuntimeSourceDir=$runtimeDir"
-    & $candle -arch x64 $runtimeDefine -out $mainObj $wxsGenerated
-    & $candle -arch x64 $runtimeDefine -out $runtimeObj $heatFragment
-    & $light $runtimeDefine $mainObj $runtimeObj -o $outputPath
+    & $candle -arch x64 $runtimeDefine @wixExtensions -out $mainObj $wxsGenerated
+    & $candle -arch x64 $runtimeDefine @wixExtensions -out $runtimeObj $heatFragment
+    & $light $runtimeDefine @wixExtensions $mainObj $runtimeObj -o $outputPath
 }
 finally {
     if (Test-Path $wxsGenerated) {
