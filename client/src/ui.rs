@@ -8,10 +8,12 @@ use std::{
 use tokio::sync::mpsc::{error::TryRecvError, UnboundedReceiver, UnboundedSender};
 
 use crate::{
+    constants::VERSION,
     invite::{self, InviteLink, InviteSignal},
     player::{VideoFrame, VideoPlayer},
     protocol::{MemberSummary, Message, SyncCommand},
-    sync::{PersistedSession, SyncClient, SyncStatsSnapshot},
+    sync::{get_data_directory, is_portable_mode, PersistedSession, SyncClient, SyncStatsSnapshot},
+    update::{self, UpdateInfo},
     utils::{compute_file_hash, format_time},
 };
 use uuid::Uuid;
@@ -83,6 +85,12 @@ pub struct HangApp {
     show_about: bool,
     show_network_overlay: bool,
 
+    // Update state
+    update_info: Option<UpdateInfo>,
+    update_check_done: bool,
+    show_url_dialog: bool,
+    url_input: String,
+
     // Video rendering
     video_texture: Option<egui::TextureHandle>,
     last_frame_size: Option<(u32, u32)>,
@@ -143,6 +151,10 @@ impl HangApp {
             resume_in_progress: false,
             show_about: false,
             show_network_overlay: false,
+            update_info: None,
+            update_check_done: false,
+            show_url_dialog: false,
+            url_input: String::new(),
             video_texture: None,
             last_frame_size: None,
         }
@@ -464,6 +476,73 @@ impl HangApp {
                 self.error_message = Some(format!("Failed to load video: {}", e));
             }
         }
+    }
+    
+    fn load_video_from_url(&mut self) {
+        let url = self.url_input.trim().to_string();
+        if url.is_empty() {
+            return;
+        }
+        
+        // Validate URL
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            self.error_message = Some("URL must start with http:// or https://".into());
+            return;
+        }
+        
+        // Try to load the URL directly in VLC
+        match self.player.load_url(&url) {
+            Ok(()) => {
+                // Use URL for hash computation
+                let hash = crate::utils::compute_string_hash(&url);
+                
+                self.video_file = Some(PathBuf::from(&url));
+                self.video_hash = Some(hash);
+                self.video_texture = None;
+                self.last_frame_size = None;
+                self.status_message = format!("Loading URL: {}", &url[..url.len().min(50)]);
+                self.error_message = None;
+                self.show_url_dialog = false;
+                self.url_input.clear();
+                
+                // Auto-play
+                if let Err(e) = self.player.play() {
+                    self.error_message = Some(format!("Failed to auto-play: {}", e));
+                } else {
+                    self.is_playing = true;
+                }
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Failed to load URL: {}", e));
+            }
+        }
+    }
+    
+    fn check_for_updates(&mut self) {
+        self.update_check_done = true;
+        self.status_message = "Checking for updates...".into();
+        
+        // Spawn a thread to check for updates
+        // Note: In a real app, we'd want to communicate results back to the UI
+        // For now, we just log the result
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new();
+            if let Ok(rt) = rt {
+                match rt.block_on(update::check_for_updates()) {
+                    Ok(info) => {
+                        tracing::info!(
+                            "Update check: current={}, latest={}, available={}",
+                            info.current_version,
+                            info.latest_version,
+                            info.is_update_available
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to check for updates: {}", e);
+                    }
+                }
+            }
+        });
     }
 
     fn create_room(&mut self) {
@@ -1348,6 +1427,10 @@ impl eframe::App for HangApp {
                     if ui.button("Open Video").clicked() {
                         self.select_video_file();
                     }
+                    
+                    if ui.button("Open URL").clicked() {
+                        self.show_url_dialog = true;
+                    }
 
                     if ui.button("⚙ Settings").clicked() {
                         self.show_settings = !self.show_settings;
@@ -1553,23 +1636,79 @@ impl eframe::App for HangApp {
         if self.show_about {
             let mut about_open = self.show_about;
             let mut close_requested = false;
+            let mut check_update_clicked = false;
+            let mut download_update_clicked = false;
+            
             egui::Window::new("About Hang")
                 .collapsible(false)
                 .resizable(false)
+                .min_width(320.0)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .open(&mut about_open)
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
                         ui.heading("Hang");
+                        ui.label(format!("Version {}", VERSION));
+                        ui.add_space(4.0);
                         ui.label("Watch your local videos in sync with friends.");
+                        ui.add_space(8.0);
+                        
+                        // Mode indicator
+                        if is_portable_mode() {
+                            ui.horizontal(|ui| {
+                                ui.label("📦");
+                                ui.colored_label(egui::Color32::from_rgb(100, 200, 100), "Portable Mode");
+                            });
+                        }
+                        
+                        // Data directory
+                        if let Some(data_dir) = get_data_directory() {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Data:");
+                                ui.monospace(data_dir.display().to_string());
+                            });
+                        }
+                        
                         ui.separator();
-                        let status = if self.sync_connected {
-                            "Connected"
+                        
+                        // Update section
+                        ui.add_space(4.0);
+                        if let Some(update) = &self.update_info {
+                            if update.is_update_available {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(255, 200, 100),
+                                    format!("🎉 Update available: v{}", update.latest_version)
+                                );
+                                ui.add_space(4.0);
+                                if ui.button("⬇ Download Update").clicked() {
+                                    download_update_clicked = true;
+                                }
+                            } else {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(100, 200, 100),
+                                    "✓ You're on the latest version"
+                                );
+                            }
+                        } else if self.update_check_done {
+                            ui.label("Could not check for updates");
                         } else {
-                            "Connecting..."
+                            if ui.button("🔄 Check for Updates").clicked() {
+                                check_update_clicked = true;
+                            }
+                        }
+                        
+                        ui.add_space(8.0);
+                        ui.separator();
+                        
+                        // Connection status
+                        let status = if self.sync_connected {
+                            "🟢 Connected"
+                        } else {
+                            "🟡 Connecting..."
                         };
-                        ui.label(format!("Sync status: {}", status));
-                        ui.label(format!("Last event: {}", self.status_message));
+                        ui.label(format!("Sync: {}", status));
+                        
                         ui.add_space(8.0);
                         if ui.button("Close").clicked() {
                             close_requested = true;
@@ -1577,6 +1716,66 @@ impl eframe::App for HangApp {
                     });
                 });
             self.show_about = about_open && !close_requested;
+            
+            if check_update_clicked {
+                self.check_for_updates();
+            }
+            if download_update_clicked {
+                if let Some(update) = &self.update_info {
+                    update::open_download_page(&update.download_url);
+                }
+            }
+        }
+        
+        // URL Input Dialog
+        if self.show_url_dialog {
+            let mut load_url = false;
+            let mut close_dialog = false;
+            
+            egui::Window::new("Open URL")
+                .collapsible(false)
+                .resizable(false)
+                .min_width(400.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label("Enter a direct video URL:");
+                    ui.add_space(4.0);
+                    
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.url_input)
+                            .hint_text("https://example.com/video.mp4")
+                            .desired_width(380.0)
+                    );
+                    
+                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        load_url = true;
+                    }
+                    
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Load").clicked() {
+                            load_url = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_dialog = true;
+                        }
+                    });
+                    
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("Supports: MP4, MKV, AVI, MOV, WebM URLs")
+                            .small()
+                            .color(egui::Color32::GRAY)
+                    );
+                });
+            
+            if close_dialog {
+                self.show_url_dialog = false;
+            }
+            
+            if load_url && !self.url_input.trim().is_empty() {
+                self.load_video_from_url();
+            }
         }
 
         // Error notification

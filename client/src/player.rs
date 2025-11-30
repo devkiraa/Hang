@@ -71,6 +71,20 @@ impl VideoPlayer {
         *self.current_file.lock() = Some(path_str.to_string());
         Ok(())
     }
+    
+    /// Load a video from URL
+    pub fn load_url(&self, url: &str) -> Result<(), String> {
+        let c_url = CString::new(url).map_err(|_| "URL contains embedded NUL".to_string())?;
+
+        unsafe {
+            let media = libvlc_media_new_location(self.instance, c_url.as_ptr())?;
+            libvlc_media_player_set_media(self.media_player, media)?;
+            libvlc_media_release(media);
+        }
+
+        *self.current_file.lock() = Some(url.to_string());
+        Ok(())
+    }
 
     /// Play the video
     pub fn play(&self) -> Result<(), String> {
@@ -579,6 +593,21 @@ unsafe fn libvlc_media_new_path(
     let media = sym(instance, path);
     if media.is_null() {
         Err(format_error("libvlc_media_new_path"))
+    } else {
+        Ok(media)
+    }
+}
+
+unsafe fn libvlc_media_new_location(
+    instance: *mut libvlc_instance_t,
+    url: *const c_char,
+) -> Result<*mut libvlc_media_t, String> {
+    let sym: Symbol<
+        unsafe extern "C" fn(*mut libvlc_instance_t, *const c_char) -> *mut libvlc_media_t,
+    > = get_symbol(b"libvlc_media_new_location\0")?;
+    let media = sym(instance, url);
+    if media.is_null() {
+        Err(format_error("libvlc_media_new_location"))
     } else {
         Ok(media)
     }

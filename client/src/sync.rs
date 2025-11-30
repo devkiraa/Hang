@@ -60,6 +60,29 @@ pub struct SyncStatsSnapshot {
     pub last_disconnect_secs: Option<f32>,
 }
 
+/// Check if the app is running in portable mode
+pub fn is_portable_mode() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("portable.txt").exists()))
+        .unwrap_or(false)
+}
+
+/// Get the data directory path (for UI display)
+pub fn get_data_directory() -> Option<PathBuf> {
+    let exe_path = std::env::current_exe().ok()?;
+    let exe_dir = exe_path.parent()?;
+    
+    // Check for portable marker file
+    let marker = exe_dir.join("portable.txt");
+    if marker.exists() {
+        return Some(exe_dir.join("data"));
+    }
+    
+    // Standard mode
+    ProjectDirs::from("com", "hang", "Hang").map(|dirs| dirs.data_dir().to_path_buf())
+}
+
 impl SyncClient {
     pub fn new() -> Self {
         Self {
@@ -403,6 +426,12 @@ impl SessionStore {
     }
 
     fn resolve_path() -> PathBuf {
+        // Check for portable mode first
+        if let Some(portable_path) = Self::portable_data_path() {
+            return portable_path;
+        }
+        
+        // Standard mode: use system directories
         if let Some(dirs) = ProjectDirs::from("com", "hang", "Hang") {
             let data_dir = dirs.data_dir();
             let _ = fs::create_dir_all(data_dir);
@@ -410,6 +439,23 @@ impl SessionStore {
         } else {
             env::temp_dir().join("hang-session.json")
         }
+    }
+    
+    /// Check if running in portable mode (portable.txt exists next to the exe)
+    fn portable_data_path() -> Option<PathBuf> {
+        let exe_path = env::current_exe().ok()?;
+        let exe_dir = exe_path.parent()?;
+        
+        // Check for portable marker file
+        let marker = exe_dir.join("portable.txt");
+        if !marker.exists() {
+            return None;
+        }
+        
+        // Create data folder next to exe
+        let data_dir = exe_dir.join("data");
+        let _ = fs::create_dir_all(&data_dir);
+        Some(data_dir.join("session.json"))
     }
 }
 

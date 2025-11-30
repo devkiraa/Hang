@@ -15,6 +15,13 @@ pub fn compute_file_hash<P: AsRef<Path>>(path: P) -> io::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Compute SHA256 hash of a string (for URLs)
+pub fn compute_string_hash(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 /// Format seconds into MM:SS or HH:MM:SS
 pub fn format_time(seconds: f64) -> String {
     let total_secs = seconds.max(0.0) as u64;

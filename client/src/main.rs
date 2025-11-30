@@ -7,6 +7,7 @@ mod player;
 mod protocol;
 mod sync;
 mod ui;
+mod update;
 mod utils;
 
 use anyhow::Result;
