@@ -2266,6 +2266,29 @@ impl eframe::App for HangApp {
                             ui.close_menu();
                         }
                         ui.separator();
+                        
+                        // Connection status
+                        let (status_icon, status_color) = if self.sync_connected {
+                            ("●", egui::Color32::from_rgb(100, 255, 100))
+                        } else {
+                            ("○", egui::Color32::YELLOW)
+                        };
+                        
+                        let status_text = if self.sync_connected {
+                            format!("{} Connected", status_icon)
+                        } else {
+                            format!("{} Connecting...", status_icon)
+                        };
+                        ui.label(egui::RichText::new(status_text).color(status_color));
+                        
+                        if !self.sync_connected {
+                            if ui.button("🔄 Retry Connection").clicked() {
+                                self.request_manual_reconnect();
+                                ui.close_menu();
+                            }
+                        }
+                        
+                        ui.separator();
                         ui.label("Keyboard Shortcuts:");
                         ui.label("  Space - Play/Pause");
                         ui.label("  ←/→ - Seek ±5s");
@@ -2275,40 +2298,24 @@ impl eframe::App for HangApp {
                         ui.label("  Esc - Exit fullscreen");
                     });
 
-                    // Right-aligned status
+                    // Right-aligned: Room info only when in room
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Connection status indicator
-                        let (status_icon, status_color) = if self.sync_connected {
-                            ("●", egui::Color32::from_rgb(100, 255, 100))
-                        } else {
-                            ("○", egui::Color32::YELLOW)
-                        };
-                        
-                        let status_text = if self.in_room {
-                            format!("{} {} ({}/{})", 
-                                status_icon,
+                        if self.in_room {
+                            let room_text = format!("🚪 {} ({}/{})", 
                                 self.current_room_id.as_deref().unwrap_or("Room"),
                                 self.participant_count,
                                 self.room_capacity_limit.unwrap_or(12)
-                            )
-                        } else if self.sync_connected {
-                            format!("{} Ready", status_icon)
-                        } else {
-                            format!("{} Connecting...", status_icon)
-                        };
-                        
-                        let label = ui.label(egui::RichText::new(status_text).color(status_color));
-                        label.on_hover_text(&self.status_message);
-
-                        if !self.sync_connected {
-                            if ui.small_button("Retry").clicked() {
+                            );
+                            ui.label(egui::RichText::new(room_text).color(egui::Color32::from_rgb(150, 200, 255)));
+                        } else if !self.sync_connected {
+                            // Show retry button when not connected
+                            if ui.small_button("🔄 Retry").clicked() {
                                 self.request_manual_reconnect();
                             }
-                        } else if !self.in_room {
-                            if let Some(session) = self.saved_session.as_ref() {
-                                if ui.small_button(format!("Resume {}", session.room_id)).clicked() {
-                                    self.attempt_resume(false);
-                                }
+                        } else if let Some(session) = self.saved_session.as_ref() {
+                            // Show resume button when there's a saved session
+                            if ui.small_button(format!("Resume {}", session.room_id)).clicked() {
+                                self.attempt_resume(false);
                             }
                         }
                     });
