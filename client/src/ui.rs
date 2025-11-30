@@ -1762,18 +1762,140 @@ impl eframe::App for HangApp {
         // Bottom control panel
         if show_chrome {
             egui::TopBottomPanel::bottom("controls").show(ctx, |ui| {
-                ui.add_space(5.0);
+                ui.add_space(2.0);
 
-                // Timeline slider
+                // Custom full-width timeline
                 let mut position = self.current_position;
-                let slider = egui::Slider::new(&mut position, 0.0..=self.duration.max(1.0))
-                    .show_value(false)
-                    .text("Timeline");
-                let slider = ui.add_sized([ui.available_width(), 22.0], slider);
-
-                if slider.drag_stopped() || slider.clicked() {
+                let duration = self.duration.max(1.0);
+                let is_buffering = self.is_buffering;
+                let is_youtube = self.current_youtube_url.is_some();
+                
+                // Timeline area - full width with more height for better interaction
+                let timeline_height = 12.0;
+                let available_width = ui.available_width();
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(available_width, timeline_height + 16.0),
+                    egui::Sense::click_and_drag(),
+                );
+                
+                if ui.is_rect_visible(rect) {
+                    let painter = ui.painter();
+                    
+                    // Timeline track area (centered vertically)
+                    let track_rect = egui::Rect::from_min_size(
+                        egui::pos2(rect.min.x, rect.center().y - timeline_height / 2.0),
+                        egui::vec2(rect.width(), timeline_height),
+                    );
+                    
+                    // Background track
+                    painter.rect_filled(
+                        track_rect,
+                        4.0,
+                        egui::Color32::from_rgb(60, 60, 60),
+                    );
+                    
+                    // Buffering indicator for streaming content
+                    if is_youtube || is_buffering {
+                        // Show a pulsing buffered area slightly ahead of playback
+                        let buffered_ratio = (position / duration + 0.1).min(1.0);
+                        let buffered_width = track_rect.width() * buffered_ratio as f32;
+                        let buffered_rect = egui::Rect::from_min_size(
+                            track_rect.min,
+                            egui::vec2(buffered_width, track_rect.height()),
+                        );
+                        painter.rect_filled(
+                            buffered_rect,
+                            4.0,
+                            egui::Color32::from_rgb(80, 80, 80),
+                        );
+                    }
+                    
+                    // Progress bar (played portion)
+                    let progress_ratio = if duration > 0.0 { position / duration } else { 0.0 };
+                    let progress_width = track_rect.width() * progress_ratio as f32;
+                    if progress_width > 0.0 {
+                        let progress_rect = egui::Rect::from_min_size(
+                            track_rect.min,
+                            egui::vec2(progress_width, track_rect.height()),
+                        );
+                        
+                        // Gradient-like effect with main color
+                        let progress_color = if is_buffering {
+                            egui::Color32::from_rgb(255, 180, 100) // Orange when buffering
+                        } else {
+                            egui::Color32::from_rgb(100, 180, 255) // Blue normally
+                        };
+                        painter.rect_filled(progress_rect, 4.0, progress_color);
+                    }
+                    
+                    // Playhead (draggable handle)
+                    let handle_x = track_rect.min.x + progress_width;
+                    let handle_radius = if response.hovered() || response.dragged() { 8.0 } else { 6.0 };
+                    let handle_color = if response.dragged() {
+                        egui::Color32::WHITE
+                    } else if response.hovered() {
+                        egui::Color32::from_rgb(220, 220, 255)
+                    } else {
+                        egui::Color32::from_rgb(180, 180, 220)
+                    };
+                    painter.circle_filled(
+                        egui::pos2(handle_x, track_rect.center().y),
+                        handle_radius,
+                        handle_color,
+                    );
+                    
+                    // Buffering animation dots
+                    if is_buffering {
+                        let time = ui.ctx().input(|i| i.time);
+                        let dot_count = 3;
+                        for i in 0..dot_count {
+                            let phase = (time * 2.0 + i as f64 * 0.3) % 1.0;
+                            let alpha = ((phase * std::f64::consts::PI).sin() * 200.0) as u8;
+                            let dot_x = handle_x + 15.0 + i as f32 * 8.0;
+                            if dot_x < track_rect.max.x - 5.0 {
+                                painter.circle_filled(
+                                    egui::pos2(dot_x, track_rect.center().y),
+                                    3.0,
+                                    egui::Color32::from_rgba_unmultiplied(255, 180, 100, alpha),
+                                );
+                            }
+                        }
+                        ui.ctx().request_repaint();
+                    }
+                }
+                
+                // Handle timeline interaction
+                if response.dragged() || response.clicked() {
+                    if let Some(pointer_pos) = response.interact_pointer_pos() {
+                        let track_start = rect.min.x;
+                        let track_width = rect.width();
+                        let relative_x = (pointer_pos.x - track_start).max(0.0).min(track_width);
+                        position = (relative_x / track_width) as f64 * duration;
+                    }
+                }
+                
+                if response.drag_stopped() || response.clicked() {
                     self.seek(position);
                 }
+                
+                // Time display below timeline
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "{} / {}",
+                        format_time(self.current_position),
+                        format_time(self.duration)
+                    ));
+                    
+                    if is_buffering {
+                        ui.label(
+                            egui::RichText::new("⏳ Buffering...")
+                                .color(egui::Color32::from_rgb(255, 180, 100))
+                                .small()
+                        );
+                    }
+                });
+                
+                ui.add_space(2.0);
 
                 ui.horizontal(|ui| {
                     // Play/Pause
@@ -1794,15 +1916,6 @@ impl eframe::App for HangApp {
                     if ui.button("⏭").clicked() {
                         let _ = self.player.frame_step_forward();
                     }
-
-                    ui.separator();
-
-                    // Time display
-                    ui.label(format!(
-                        "{} / {}",
-                        format_time(self.current_position),
-                        format_time(self.duration)
-                    ));
 
                     ui.separator();
 
