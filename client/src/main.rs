@@ -168,14 +168,45 @@ async fn run_connection_loop(
                 })
                 .await
             {
-                Ok(_) => {
+                Ok(mut disconnect_rx) => {
                     tracing::info!("Connected to {label} sync server at {url}");
+                    sync_client.mark_connected(label);
                     update_connection_status(
                         &app_state,
                         format!("Connected to {label} sync server"),
                         Some(true),
                     );
-                    return;
+                    attempt = 0;
+
+                    loop {
+                        tokio::select! {
+                            _ = &mut disconnect_rx => {
+                                tracing::warn!("Sync connection closed; re-attempting connection");
+                                sync_client.mark_disconnected();
+                                update_connection_status(
+                                    &app_state,
+                                    "Lost sync connection. Attempting to reconnect...".to_string(),
+                                    Some(false),
+                                );
+                                notify_connection_loss(&app_state);
+                                continue 'outer;
+                            }
+                            recv = reconnect_rx.recv() => {
+                                if recv.is_none() {
+                                    tracing::info!("Reconnect channel closed; stopping connection loop");
+                                    return;
+                                }
+                                tracing::info!("Manual reconnect requested; restarting connection attempts");
+                                sync_client.mark_disconnected();
+                                update_connection_status(
+                                    &app_state,
+                                    "Reconnecting to sync server...".to_string(),
+                                    Some(false),
+                                );
+                                continue 'outer;
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("Failed to connect to {label} sync server at {url}: {}", e);
@@ -220,6 +251,13 @@ fn connection_endpoints() -> Vec<(&'static str, &'static str)> {
         endpoints.push(("local development", LOCAL_WS_URL));
     }
     endpoints
+}
+
+fn notify_connection_loss(app_state: &Arc<Mutex<Option<Arc<Mutex<HangApp>>>>>) {
+    if let Some(app_arc) = app_state.lock().as_ref() {
+        let mut app = app_arc.lock();
+        app.handle_connection_loss();
+    }
 }
 
 async fn warm_up_backend(

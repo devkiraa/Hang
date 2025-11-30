@@ -16,6 +16,21 @@
 
     <Property Id="ARPPRODUCTICON" Value="HangIcon" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <Property Id="VC14RUNTIMEFOUND" Secure="yes">
+      <RegistrySearch Id="RegSearch_VC14_x64"
+                       Root="HKLM"
+                       Key="SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+                       Name="Installed"
+                       Type="raw"
+                       Win64="yes" />
+      <RegistrySearch Id="RegSearch_VC14_Wow6432"
+                       Root="HKLM"
+                       Key="SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+                       Name="Installed"
+                       Type="raw" />
+    </Property>
+
+
 
     <Icon Id="HangIcon" SourceFile="__CLIENT_EXE__" />
 
@@ -80,6 +95,10 @@
         <ComponentRef Id="cmpDesktopShortcut" />
       </Feature>
     </Feature>
+
+    <Condition Message="Hang requires the Microsoft Visual C++ 2015-2022 Redistributable (x64). Please download and install it from https://aka.ms/vs/17/release/vc_redist.x64.exe then run this installer again.">
+      <![CDATA[Installed OR (VC14RUNTIMEFOUND = "#1")]]>
+    </Condition>
 
     <UIRef Id="WixUI_FeatureTree" />
     <WixVariable Id="WixUILicenseRtf" Value="__LICENSE_RTF__" />

@@ -1,20 +1,27 @@
 use eframe::egui;
 use parking_lot::Mutex;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    env,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::mpsc::{error::TryRecvError, UnboundedReceiver, UnboundedSender};
 
 use crate::{
     invite::{self, InviteLink, InviteSignal},
     player::{VideoFrame, VideoPlayer},
-    protocol::{Message, SyncCommand},
-    sync::{PersistedSession, SyncClient},
+    protocol::{MemberSummary, Message, SyncCommand},
+    sync::{PersistedSession, SyncClient, SyncStatsSnapshot},
     utils::{compute_file_hash, format_time},
 };
+use uuid::Uuid;
 
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"];
 const KEYBOARD_SEEK_STEP: f64 = 5.0;
 const KEYBOARD_VOLUME_STEP: f64 = 5.0;
+const ROOM_CAPACITY_MIN: u32 = 2;
+const ROOM_CAPACITY_MAX: u32 = 32;
+const DEFAULT_ROOM_CAPACITY: u32 = 12;
 
 pub struct HangApp {
     // Video player
@@ -29,6 +36,7 @@ pub struct HangApp {
     room_id_input: String,
     create_passcode_input: String,
     join_passcode_input: String,
+    display_name_input: String,
     status_message: String,
     error_message: Option<String>,
 
@@ -44,12 +52,15 @@ pub struct HangApp {
     current_room_id: Option<String>,
     is_host: bool,
     participant_count: usize,
+    member_roster: Vec<MemberSummary>,
     room_dialog_open: bool,
     is_fullscreen: bool,
     controls_visible: bool,
     active_room_passcode: Option<String>,
     pending_room_passcode: Option<String>,
     room_has_passcode: bool,
+    room_capacity_input: u32,
+    room_capacity_limit: Option<usize>,
 
     // Settings panel
     show_settings: bool,
@@ -70,6 +81,7 @@ pub struct HangApp {
     auto_resume_attempted: bool,
     resume_in_progress: bool,
     show_about: bool,
+    show_network_overlay: bool,
 
     // Video rendering
     video_texture: Option<egui::TextureHandle>,
@@ -93,6 +105,7 @@ impl HangApp {
             room_id_input: String::new(),
             create_passcode_input: String::new(),
             join_passcode_input: String::new(),
+            display_name_input: Self::default_display_name(),
             status_message: "Connecting to sync server (may take up to a minute)...".to_string(),
             error_message: None,
             is_playing: false,
@@ -104,12 +117,15 @@ impl HangApp {
             current_room_id: None,
             is_host: false,
             participant_count: 0,
+            member_roster: Vec::new(),
             room_dialog_open: false,
             is_fullscreen: false,
             controls_visible: true,
             active_room_passcode: None,
             pending_room_passcode: None,
             room_has_passcode: false,
+            room_capacity_input: DEFAULT_ROOM_CAPACITY,
+            room_capacity_limit: None,
             show_settings: false,
             audio_tracks: Vec::new(),
             subtitle_tracks: Vec::new(),
@@ -126,6 +142,7 @@ impl HangApp {
             auto_resume_attempted: false,
             resume_in_progress: false,
             show_about: false,
+            show_network_overlay: false,
             video_texture: None,
             last_frame_size: None,
         }
@@ -154,8 +171,9 @@ impl HangApp {
         );
         self.error_message = None;
 
-        self.audio_tracks = self.player.get_audio_tracks().unwrap_or_default();
-        self.subtitle_tracks = self.player.get_subtitle_tracks().unwrap_or_default();
+        if let Err(e) = self.refresh_media_tracks() {
+            self.error_message = Some(e);
+        }
 
         if let Err(e) = self.player.play() {
             self.error_message = Some(format!("Failed to auto-play: {}", e));
@@ -184,6 +202,103 @@ impl HangApp {
         } else {
             Some(trimmed.to_string())
         }
+    }
+
+    fn default_display_name() -> String {
+        env::var("USERNAME")
+            .ok()
+            .or_else(|| env::var("USER").ok())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| format!("Guest {}", &Uuid::new_v4().to_string()[..4]))
+    }
+
+    fn sanitized_display_name(&self) -> Option<String> {
+        Self::sanitize_display_name_str(&self.display_name_input)
+    }
+
+    fn sanitize_display_name_str(input: &str) -> Option<String> {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let mut cleaned = String::with_capacity(trimmed.len().min(32));
+        for ch in trimmed.chars() {
+            if ch.is_control() {
+                continue;
+            }
+            if cleaned.len() >= 32 {
+                break;
+            }
+            cleaned.push(ch);
+        }
+        if cleaned.is_empty() {
+            None
+        } else {
+            Some(cleaned)
+        }
+    }
+
+    fn refresh_media_tracks(&mut self) -> Result<(), String> {
+        self.audio_tracks = self.player.get_audio_tracks()?;
+        if !self
+            .audio_tracks
+            .iter()
+            .any(|track| track.id == self.selected_audio)
+        {
+            self.selected_audio = self
+                .audio_tracks
+                .first()
+                .map(|track| track.id)
+                .unwrap_or(-1);
+        }
+
+        self.subtitle_tracks = self.player.get_subtitle_tracks()?;
+        if self.selected_subtitle != -1
+            && !self
+                .subtitle_tracks
+                .iter()
+                .any(|track| track.id == self.selected_subtitle)
+        {
+            self.selected_subtitle = -1;
+        }
+
+        Ok(())
+    }
+
+    fn apply_member_roster(&mut self, roster: Vec<MemberSummary>, capacity: usize) {
+        self.participant_count = roster.len().max(1);
+        self.member_roster = roster;
+        self.room_capacity_limit = Some(capacity);
+        self.room_capacity_input = capacity as u32;
+    }
+
+    fn format_bytes_short(bytes: u64) -> String {
+        const KB: f64 = 1024.0;
+        const MB: f64 = KB * 1024.0;
+        const GB: f64 = MB * 1024.0;
+        let value = bytes as f64;
+        if value < KB {
+            format!("{} B", bytes)
+        } else if value < MB {
+            format!("{:.1} KB", value / KB)
+        } else if value < GB {
+            format!("{:.1} MB", value / MB)
+        } else {
+            format!("{:.2} GB", value / GB)
+        }
+    }
+
+    fn describe_duration(secs: Option<f32>) -> String {
+        secs.map(|value| {
+            if value.is_nan() {
+                "—".to_string()
+            } else if value >= 120.0 {
+                format!("{:.1} min", value / 60.0)
+            } else {
+                format!("{:.1} s", value)
+            }
+        })
+        .unwrap_or_else(|| "—".to_string())
     }
 
     fn update_playback_state(&mut self) {
@@ -252,7 +367,10 @@ impl HangApp {
             }
             return;
         }
-        match self.sync.resume_session(session.resume_token.clone()) {
+        match self
+            .sync
+            .resume_session(session.resume_token.clone(), self.sanitized_display_name())
+        {
             Ok(_) => {
                 self.status_message = format!("Attempting to resume room {}...", session.room_id);
                 self.resume_in_progress = true;
@@ -304,6 +422,18 @@ impl HangApp {
         self.resume_in_progress = false;
     }
 
+    pub fn handle_connection_loss(&mut self) {
+        self.sync_connected = false;
+        self.in_room = false;
+        self.current_room_id = None;
+        self.is_host = false;
+        self.participant_count = 0;
+        self.member_roster.clear();
+        self.room_capacity_limit = None;
+        self.status_message = "Sync connection lost. Reconnecting...".to_string();
+        self.resume_in_progress = false;
+    }
+
     fn process_invite_signal(&mut self, signal: InviteSignal) {
         match invite::parse_invite_url(&signal.url) {
             Some(link) => {
@@ -347,7 +477,12 @@ impl HangApp {
         if let Some(hash) = &self.video_hash {
             let passcode = Self::normalize_passcode(&self.create_passcode_input);
             self.pending_room_passcode = passcode.clone();
-            if let Err(e) = self.sync.create_room(hash.clone(), passcode) {
+            let display_name = self.sanitized_display_name();
+            let capacity = Some(self.room_capacity_input as usize);
+            if let Err(e) = self
+                .sync
+                .create_room(hash.clone(), passcode, display_name, capacity)
+            {
                 self.error_message = Some(format!("Failed to create room: {}", e));
             } else {
                 self.status_message = "Creating room...".to_string();
@@ -377,9 +512,10 @@ impl HangApp {
         if let Some(hash) = &self.video_hash {
             let passcode = Self::normalize_passcode(&self.join_passcode_input);
             self.pending_room_passcode = passcode.clone();
-            if let Err(e) = self
-                .sync
-                .join_room(code.clone(), hash.clone(), passcode.clone())
+            let display_name = self.sanitized_display_name();
+            if let Err(e) =
+                self.sync
+                    .join_room(code.clone(), hash.clone(), passcode.clone(), display_name)
             {
                 self.error_message = Some(format!("Failed to join room: {}", e));
             } else {
@@ -396,6 +532,8 @@ impl HangApp {
         self.current_room_id = None;
         self.is_host = false;
         self.participant_count = 0;
+        self.member_roster.clear();
+        self.room_capacity_limit = None;
         self.status_message = "Left room".to_string();
     }
 
@@ -455,6 +593,8 @@ impl HangApp {
                 passcode_enabled,
                 file_hash,
                 resume_token,
+                capacity,
+                display_name,
             } => {
                 self.sync.set_room_joined(room_id.clone(), client_id, true);
                 self.in_room = true;
@@ -466,6 +606,8 @@ impl HangApp {
                 self.invite_modal_open = false;
                 self.pending_invite = None;
                 self.room_has_passcode = passcode_enabled;
+                self.room_capacity_limit = Some(capacity);
+                self.room_capacity_input = capacity as u32;
                 self.active_room_passcode = if passcode_enabled {
                     self.pending_room_passcode.clone()
                 } else {
@@ -475,6 +617,12 @@ impl HangApp {
                 if passcode_enabled {
                     self.create_passcode_input.clear();
                 }
+                self.display_name_input = display_name.clone();
+                self.member_roster = vec![MemberSummary {
+                    client_id,
+                    display_name,
+                    is_host: true,
+                }];
                 self.remember_session(room_id.clone(), resume_token, file_hash, true);
             }
             Message::RoomJoined {
@@ -484,6 +632,8 @@ impl HangApp {
                 passcode_enabled,
                 file_hash,
                 resume_token,
+                capacity,
+                display_name,
             } => {
                 self.sync
                     .set_room_joined(room_id.clone(), client_id, is_host);
@@ -499,6 +649,8 @@ impl HangApp {
                 self.invite_modal_open = false;
                 self.pending_invite = None;
                 self.room_has_passcode = passcode_enabled;
+                self.room_capacity_limit = Some(capacity);
+                self.room_capacity_input = capacity as u32;
                 self.active_room_passcode = if passcode_enabled {
                     self.pending_room_passcode.clone()
                 } else {
@@ -508,6 +660,12 @@ impl HangApp {
                 if !is_host {
                     self.join_passcode_input.clear();
                 }
+                self.display_name_input = display_name.clone();
+                self.member_roster = vec![MemberSummary {
+                    client_id,
+                    display_name,
+                    is_host,
+                }];
                 self.remember_session(room_id, resume_token, file_hash, is_host);
             }
             Message::RoomLeft => {
@@ -522,11 +680,17 @@ impl HangApp {
                 self.pending_room_passcode = None;
                 self.pending_invite = None;
                 self.invite_modal_open = false;
+                self.member_roster.clear();
+                self.room_capacity_limit = None;
                 self.clear_saved_session();
             }
             Message::RoomNotFound => {
                 self.resume_in_progress = false;
                 self.error_message = Some("Room not found".to_string());
+            }
+            Message::RoomFull { capacity } => {
+                self.resume_in_progress = false;
+                self.error_message = Some(format!("Room is full ({} seats)", capacity));
             }
             Message::FileHashMismatch { expected } => {
                 self.resume_in_progress = false;
@@ -545,9 +709,13 @@ impl HangApp {
                 self.resume_in_progress = false;
                 self.error_message = Some(message);
             }
-            Message::RoomMemberUpdate { room_id, members } => {
+            Message::RoomMemberUpdate {
+                room_id,
+                members,
+                capacity,
+            } => {
                 if self.current_room_id.as_deref() == Some(room_id.as_str()) {
-                    self.participant_count = members;
+                    self.apply_member_roster(members, capacity);
                 }
             }
             _ => {}
@@ -725,6 +893,9 @@ impl HangApp {
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
+                ui.label("Display name (shared with the room):");
+                ui.text_edit_singleline(&mut self.display_name_input);
+                ui.separator();
                 if let Some(code) = self.current_room_id.clone() {
                     ui.label(format!("Current room: {}", code));
                     ui.horizontal(|ui| {
@@ -759,6 +930,9 @@ impl HangApp {
                                 ui.label("No passcode set");
                             }
                         });
+                        if let Some(limit) = self.room_capacity_limit {
+                            ui.label(format!("Capacity: {} seats", limit));
+                        }
                     } else if self.room_has_passcode {
                         ui.colored_label(
                             egui::Color32::LIGHT_YELLOW,
@@ -767,10 +941,7 @@ impl HangApp {
                     }
                     ui.separator();
                     ui.checkbox(&mut self.sync_enabled, "Enable sync");
-                    ui.label(format!(
-                        "Participants detected: {}",
-                        self.participant_count.max(1)
-                    ));
+                    self.draw_participant_indicator(ui);
                 } else {
                     ui.label("Create a room to get a sharable 6-digit code.");
                     let can_create = self.video_hash.is_some() && self.sync_connected;
@@ -791,6 +962,13 @@ impl HangApp {
                         egui::TextEdit::singleline(&mut self.create_passcode_input)
                             .password(true)
                             .hint_text("Leave blank for none"),
+                    );
+                    ui.add(
+                        egui::Slider::new(
+                            &mut self.room_capacity_input,
+                            ROOM_CAPACITY_MIN..=ROOM_CAPACITY_MAX,
+                        )
+                        .text("Seats"),
                     );
 
                     ui.separator();
@@ -913,7 +1091,7 @@ impl HangApp {
 
                 ui.add_space(6.0);
 
-                if ui.button("Open Video…").clicked() {
+                if ui.button("Open Video...").clicked() {
                     open_file_requested = true;
                 }
 
@@ -948,6 +1126,55 @@ impl HangApp {
         }
     }
 
+    fn render_network_overlay(&mut self, ctx: &egui::Context) {
+        if !self.show_network_overlay {
+            return;
+        }
+        let mut overlay_open = self.show_network_overlay;
+        egui::Window::new("Network Stats")
+            .id(egui::Id::new("hang-network-stats"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-12.0, 12.0))
+            .open(&mut overlay_open)
+            .show(ctx, |ui| {
+                let stats: SyncStatsSnapshot = self.sync.stats_snapshot();
+                let endpoint = stats
+                    .endpoint_label
+                    .unwrap_or_else(|| "Not connected".to_string());
+                ui.label(format!("Endpoint: {}", endpoint));
+                ui.separator();
+                ui.label(format!(
+                    "Traffic: ↓ {} · ↑ {}",
+                    Self::format_bytes_short(stats.bytes_in),
+                    Self::format_bytes_short(stats.bytes_out)
+                ));
+                ui.label(format!(
+                    "Messages: ↓ {} · ↑ {}",
+                    stats.messages_in, stats.messages_out
+                ));
+                let rtt = stats
+                    .last_rtt_ms
+                    .map(|ms| format!("{ms:.0} ms"))
+                    .unwrap_or_else(|| "—".to_string());
+                ui.label(format!("Latency: {}", rtt));
+                let last_message = stats
+                    .last_message_age
+                    .map(|secs| format!("{secs:.1} s ago"))
+                    .unwrap_or_else(|| "—".to_string());
+                ui.label(format!("Last sync: {}", last_message));
+                ui.label(format!(
+                    "Connected: {}",
+                    Self::describe_duration(stats.connected_duration)
+                ));
+                ui.label(format!("Reconnect attempts: {}", stats.reconnect_attempts));
+                if let Some(disconnect) = stats.last_disconnect_secs {
+                    ui.label(format!("Last drop: {:.1} s ago", disconnect));
+                }
+            });
+        self.show_network_overlay = overlay_open;
+    }
+
     fn sanitize_room_code_input(&mut self) {
         let digits: String = self
             .room_id_input
@@ -978,18 +1205,101 @@ impl HangApp {
         if !self.in_room {
             return;
         }
-        let count = self.participant_count.max(1);
-        ui.horizontal(|ui| {
-            ui.label("Participants:");
-            for idx in 0..count {
-                let color = if idx == 0 {
-                    egui::Color32::from_rgb(120, 200, 120)
+        let capacity_text = self
+            .room_capacity_limit
+            .map(|limit| format!("{} / {}", self.participant_count.max(1), limit))
+            .unwrap_or_else(|| format!("{} online", self.participant_count.max(1)));
+        ui.vertical(|ui| {
+            ui.label(format!("Participants ({capacity_text})"));
+            for member in &self.member_roster {
+                let label = if member.is_host {
+                    format!("★ {}", member.display_name)
                 } else {
-                    egui::Color32::from_rgb(58, 198, 86)
+                    format!("• {}", member.display_name)
                 };
-                ui.colored_label(color, "●");
+                ui.label(label);
+            }
+            if self.member_roster.is_empty() {
+                ui.label("Waiting for roster update...");
             }
         });
+    }
+
+    fn render_track_selectors(&mut self, ui: &mut egui::Ui) {
+        if self.audio_tracks.is_empty() && self.subtitle_tracks.is_empty() {
+            return;
+        }
+        ui.horizontal(|ui| {
+            if !self.audio_tracks.is_empty() {
+                let selected = self
+                    .audio_tracks
+                    .iter()
+                    .find(|track| track.id == self.selected_audio)
+                    .map(|track| Self::describe_track(&track.title, &track.lang))
+                    .unwrap_or_else(|| "Default".to_string());
+                egui::ComboBox::from_label("Audio")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        for track in &self.audio_tracks {
+                            let label = Self::describe_track(&track.title, &track.lang);
+                            if ui
+                                .selectable_value(&mut self.selected_audio, track.id, label)
+                                .clicked()
+                            {
+                                if let Err(e) = self.player.set_audio_track(track.id) {
+                                    self.error_message =
+                                        Some(format!("Failed to switch audio track: {}", e));
+                                }
+                            }
+                        }
+                    });
+            }
+
+            if !self.subtitle_tracks.is_empty() {
+                let selected = if self.selected_subtitle == -1 {
+                    "No subtitles".to_string()
+                } else {
+                    self.subtitle_tracks
+                        .iter()
+                        .find(|track| track.id == self.selected_subtitle)
+                        .map(|track| Self::describe_track(&track.title, &track.lang))
+                        .unwrap_or_else(|| "Custom".to_string())
+                };
+                egui::ComboBox::from_label("Subtitles")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_value(&mut self.selected_subtitle, -1, "None")
+                            .clicked()
+                        {
+                            if let Err(e) = self.player.set_subtitle_track(-1) {
+                                self.error_message =
+                                    Some(format!("Failed to disable subtitles: {}", e));
+                            }
+                        }
+                        for track in &self.subtitle_tracks {
+                            let label = Self::describe_track(&track.title, &track.lang);
+                            if ui
+                                .selectable_value(&mut self.selected_subtitle, track.id, label)
+                                .clicked()
+                            {
+                                if let Err(e) = self.player.set_subtitle_track(track.id) {
+                                    self.error_message =
+                                        Some(format!("Failed to switch subtitle track: {}", e));
+                                }
+                            }
+                        }
+                    });
+            }
+        });
+    }
+
+    fn describe_track(title: &str, lang: &str) -> String {
+        if lang.is_empty() {
+            title.to_string()
+        } else {
+            format!("{} ({})", title, lang)
+        }
     }
 
     fn update_control_visibility(&mut self, ctx: &egui::Context) {
@@ -1051,11 +1361,15 @@ impl eframe::App for HangApp {
                         self.show_about = true;
                     }
 
+                    if ui.button("Network Stats").clicked() {
+                        self.show_network_overlay = !self.show_network_overlay;
+                    }
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let connection_label = if self.sync_connected {
                             "Connected"
                         } else {
-                            "Connecting…"
+                            "Connecting..."
                         };
                         let label = ui.label(egui::RichText::new(connection_label).color(
                             if self.sync_connected {
@@ -1088,6 +1402,7 @@ impl eframe::App for HangApp {
 
         self.render_room_dialog(ctx);
         self.render_invite_modal(ctx);
+        self.render_network_overlay(ctx);
 
         // Bottom control panel
         if show_chrome {
@@ -1167,6 +1482,9 @@ impl eframe::App for HangApp {
                     });
                 });
 
+                ui.add_space(4.0);
+                self.render_track_selectors(ui);
+
                 ui.add_space(5.0);
 
                 if self.in_room {
@@ -1181,10 +1499,17 @@ impl eframe::App for HangApp {
 
         // Settings window
         if self.show_settings {
+            let mut settings_open = self.show_settings;
             egui::Window::new("Settings")
-                .open(&mut self.show_settings)
+                .open(&mut settings_open)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
+                    if ui.button("Refresh Tracks").clicked() {
+                        if let Err(e) = self.refresh_media_tracks() {
+                            self.error_message = Some(e);
+                        }
+                    }
+                    ui.separator();
                     ui.heading("Audio Tracks");
                     for track in &self.audio_tracks {
                         let label = if track.lang.is_empty() {
@@ -1222,6 +1547,7 @@ impl eframe::App for HangApp {
                         }
                     }
                 });
+            self.show_settings = settings_open;
         }
 
         if self.show_about {
@@ -1240,7 +1566,7 @@ impl eframe::App for HangApp {
                         let status = if self.sync_connected {
                             "Connected"
                         } else {
-                            "Connecting…"
+                            "Connecting..."
                         };
                         ui.label(format!("Sync status: {}", status));
                         ui.label(format!("Last event: {}", self.status_message));

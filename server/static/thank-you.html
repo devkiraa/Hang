@@ -151,6 +151,28 @@
             opacity: 1;
             transform: translateY(0);
         }
+        
+        /* Staggered reveal for release items */
+        .release-item {
+            opacity: 0;
+            transform: translateY(15px);
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .release-item.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        
+        /* Version badge styles */
+        .version-badge {
+            background: linear-gradient(135deg, rgba(255, 138, 0, 0.15) 0%, rgba(255, 138, 0, 0.05) 100%);
+            border: 1px solid rgba(255, 138, 0, 0.2);
+        }
+        
+        .version-badge-old {
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
     </style>
 </head>
 <body class="antialiased overflow-x-hidden">
@@ -245,21 +267,37 @@
                 </div>
             </div>
 
-            <!-- Previous Releases Section -->
-            <div id="releases-container" class="hidden text-left reveal delay-200">
-                <div class="flex items-center gap-4 mb-6 px-2 opacity-70">
-                    <div class="h-px bg-white/10 flex-grow"></div>
-                    <span class="text-xs font-mono text-brand-muted uppercase tracking-widest">Previous Releases</span>
-                    <div class="h-px bg-white/10 flex-grow"></div>
-                </div>
-                
-                <div id="releases-list" class="grid gap-3 max-w-2xl mx-auto">
-                    <!-- Release items will be injected here -->
-                </div>
-            </div>
-
         </div>
     </main>
+
+    <!-- Previous Releases Section (Full Width) -->
+    <section id="releases-section" class="hidden relative z-10 py-20 bg-gradient-to-b from-transparent via-[#050505]/50 to-[#050505]">
+        <div class="max-w-4xl mx-auto px-6">
+            <!-- Section Header -->
+            <div class="text-center mb-12 reveal">
+                <div class="inline-flex items-center gap-3 mb-4 px-4 py-2 rounded-full bg-white/5 border border-white/10">
+                    <i class="fa-solid fa-clock-rotate-left text-brand-500"></i>
+                    <span class="text-xs font-mono text-brand-muted uppercase tracking-widest">Version History</span>
+                </div>
+                <h2 class="text-2xl md:text-3xl font-bold text-white tracking-tight mb-3">Previous Releases</h2>
+                <p class="text-brand-muted text-sm max-w-md mx-auto">Need an older version? Download previous releases below.</p>
+            </div>
+            
+            <!-- Releases Grid -->
+            <div id="releases-list" class="grid gap-4">
+                <!-- Release items will be injected here -->
+            </div>
+            
+            <!-- View All Link -->
+            <div class="text-center mt-8">
+                <a href="https://github.com/devkiraa/Hang/releases" target="_blank" 
+                   class="inline-flex items-center gap-2 text-sm text-brand-muted hover:text-brand-500 transition-colors">
+                    <span>View all releases on GitHub</span>
+                    <i class="fa-solid fa-arrow-up-right-from-square text-xs"></i>
+                </a>
+            </div>
+        </div>
+    </section>
 
     <!-- Footer -->
     <footer class="border-t border-white/5 py-12 bg-[#050505] relative z-10">
@@ -329,32 +367,64 @@
         const repoOwner = 'devkiraa';
         const repoName = 'Hang';
 
-        // Helper to render a release item
-        function renderReleaseItem(tagName, dateStr, sizeStr, downloadUrl) {
+        // Helper to render a release item with enhanced styling
+        function renderReleaseItem(tagName, dateStr, sizeStr, downloadUrl, releaseNotes, index) {
             const list = document.getElementById('releases-list');
             const item = document.createElement('div');
-            item.className = 'flex items-center justify-between p-4 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all';
+            item.className = 'release-item bento-card rounded-2xl p-5 md:p-6';
+            item.style.transitionDelay = `${index * 100}ms`;
+            
+            // Truncate release notes
+            const notes = releaseNotes ? releaseNotes.substring(0, 100).replace(/[#*`]/g, '').trim() : '';
+            const notesPreview = notes.length >= 100 ? notes + '...' : notes;
+            
             item.innerHTML = `
-                <div class="flex flex-col">
-                    <span class="font-mono font-bold text-white text-sm">${tagName}</span>
-                    <span class="text-xs text-brand-muted mt-0.5">Released ${dateStr}</span>
-                </div>
-                <div class="flex items-center gap-4">
-                    <span class="text-xs text-brand-muted hidden sm:block">${sizeStr}</span>
-                    <a href="${downloadUrl}" class="btn-mini flex items-center gap-2">
-                        <i class="fa-solid fa-download"></i>
-                        Download
-                    </a>
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div class="flex items-start gap-4">
+                        <div class="version-badge-old px-3 py-1.5 rounded-lg flex-shrink-0">
+                            <span class="font-mono font-bold text-white text-sm">${tagName}</span>
+                        </div>
+                        <div class="flex flex-col min-w-0">
+                            <span class="text-sm text-brand-muted">Released ${dateStr}</span>
+                            ${notesPreview ? `<p class="text-xs text-brand-muted/60 mt-1 truncate max-w-xs md:max-w-md">${notesPreview}</p>` : ''}
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-3 sm:gap-4 flex-shrink-0">
+                        <span class="text-xs text-brand-muted font-mono bg-white/5 px-2 py-1 rounded">${sizeStr}</span>
+                        <a href="${downloadUrl}" class="btn-mini flex items-center gap-2 whitespace-nowrap">
+                            <i class="fa-solid fa-download"></i>
+                            <span class="hidden sm:inline">Download</span>
+                        </a>
+                    </div>
                 </div>
             `;
             list.appendChild(item);
+        }
+        
+        // Intersection Observer for scroll animations
+        function setupScrollAnimations() {
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('visible');
+                        // Also trigger reveal for parent sections
+                        if (entry.target.classList.contains('reveal')) {
+                            entry.target.classList.add('active');
+                        }
+                    }
+                });
+            }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+            
+            // Observe all release items and reveal elements
+            document.querySelectorAll('.release-item, #releases-section .reveal').forEach(el => {
+                observer.observe(el);
+            });
         }
 
         async function fetchReleases() {
             const statusEl = document.getElementById('download-status');
             const manualLink = document.getElementById('manual-download');
             const retryContainer = document.getElementById('retry-container');
-            const container = document.getElementById('releases-container');
 
             try {
                 const response = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/releases`);
@@ -373,7 +443,8 @@
                                     latest.assets[0];
 
                 if (latestAsset) {
-                    statusEl.innerHTML = `Downloading <span class="text-brand-500 font-mono">${latest.tag_name}</span> automatically...`;
+                    const sizeMB = latestAsset.size ? (latestAsset.size / (1024 * 1024)).toFixed(1) + ' MB' : '';
+                    statusEl.innerHTML = `Downloading <span class="text-brand-500 font-mono">${latest.tag_name}</span>${sizeMB ? ' (' + sizeMB + ')' : ''} automatically...`;
                     manualLink.href = latestAsset.browser_download_url;
                     manualLink.textContent = "click here manually";
                     manualLink.onclick = null; 
@@ -383,42 +454,53 @@
                         statusEl.innerHTML = `Download started for <span class="text-brand-500 font-mono">${latest.tag_name}</span>`;
                         retryContainer.innerHTML = `Download didn't start? <a href="${latestAsset.browser_download_url}" class="text-brand-500 font-bold hover:text-brand-400 hover:underline transition-colors cursor-pointer">Retry Download</a>`;
                     }, 1500);
+                } else {
+                    // No suitable asset found, redirect to releases page
+                    const releasesUrl = `https://github.com/${repoOwner}/${repoName}/releases/latest`;
+                    statusEl.innerHTML = `Found <span class="text-brand-500 font-mono">${latest.tag_name}</span> but no installer. Redirecting...`;
+                    manualLink.href = releasesUrl;
+                    setTimeout(() => { window.location.href = releasesUrl; }, 2000);
                 }
 
-                // 2. Handle Previous Releases
+                // 2. Handle Previous Releases (show in dedicated section)
                 const olderReleases = releases.slice(1);
+                const section = document.getElementById('releases-section');
+                
                 if (olderReleases.length > 0) {
-                    container.classList.remove('hidden');
-                    olderReleases.forEach(release => {
+                    section.classList.remove('hidden');
+                    olderReleases.forEach((release, index) => {
                         const asset = release.assets.find(a => a.name.endsWith('.msi')) || 
                                       release.assets.find(a => a.name.endsWith('.exe')) || 
                                       release.assets[0];
                         if (!asset) return;
                         
-                        const date = new Date(release.published_at).toLocaleDateString();
+                        const date = new Date(release.published_at).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short', 
+                            day: 'numeric'
+                        });
                         const size = asset.size ? (asset.size / (1024 * 1024)).toFixed(1) + ' MB' : 'Unknown';
-                        renderReleaseItem(release.tag_name, date, size, asset.browser_download_url);
+                        renderReleaseItem(release.tag_name, date, size, asset.browser_download_url, release.body, index);
                     });
+                    
+                    // Setup scroll animations after items are rendered
+                    setTimeout(setupScrollAnimations, 100);
                 }
 
             } catch (error) {
-                console.warn('Fetch error (showing mock data for visual test):', error);
+                console.warn('Fetch error:', error);
                 
-                // Fallback / Mock Data Logic so user can see UI
-                statusEl.textContent = "Download should start shortly...";
-                const fallbackUrl = "https://github.com/devkiraa/Hang/releases/download/v1.0.0/Hang.0.0.0.msi";
+                // Fallback to direct releases page
+                statusEl.textContent = "Could not fetch release info. Redirecting to releases page...";
+                const fallbackUrl = `https://github.com/${repoOwner}/${repoName}/releases/latest`;
                 manualLink.href = fallbackUrl;
+                manualLink.textContent = "go to releases page";
                 manualLink.onclick = null;
                 
                 setTimeout(() => {
                     window.location.href = fallbackUrl;
-                    retryContainer.innerHTML = `Download didn't start? <a href="${fallbackUrl}" class="text-brand-500 font-bold hover:text-brand-400 hover:underline transition-colors cursor-pointer">Retry Download</a>`;
-                }, 1500);
-
-                // Show mock previous releases for UI demonstration
-                container.classList.remove('hidden');
-                renderReleaseItem('v0.9.0', '1/2/2024', '14.2 MB', '#');
-                renderReleaseItem('v0.8.5', '12/20/2023', '13.8 MB', '#');
+                    retryContainer.innerHTML = `Didn't redirect? <a href="${fallbackUrl}" class="text-brand-500 font-bold hover:text-brand-400 hover:underline transition-colors cursor-pointer">Click here</a>`;
+                }, 2000);
             }
         }
     </script>

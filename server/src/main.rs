@@ -27,8 +27,6 @@ use state::ServerState;
 type ClientSender = mpsc::UnboundedSender<Message>;
 type ClientSenders = Arc<RwLock<HashMap<Uuid, ClientSender>>>;
 
-const LOG_TAG: &str = "[Hang Server]";
-
 #[derive(Clone)]
 struct AppState {
     server_state: ServerState,
@@ -38,20 +36,50 @@ struct AppState {
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const THANK_YOU_HTML: &str = include_str!("../static/thank-you.html");
 
+fn print_banner(port: u16) {
+    let version = env!("CARGO_PKG_VERSION");
+    println!();
+    println!("  ╭─────────────────────────────────────────╮");
+    println!("  │                                         │");
+    println!("  │   ▶  H A N G   S E R V E R              │");
+    println!("  │      Watch Together, Stay Together      │");
+    println!("  │                                         │");
+    println!("  ├─────────────────────────────────────────┤");
+    println!("  │                                         │");
+    println!("  │   Version:    {:<25} │", version);
+    println!("  │   Port:       {:<25} │", port);
+    println!("  │   Status:     Ready                     │");
+    println!("  │                                         │");
+    println!("  ├─────────────────────────────────────────┤");
+    println!("  │                                         │");
+    println!("  │   Endpoints:                            │");
+    println!("  │     • http://localhost:{:<5}/           │", port);
+    println!("  │     • ws://localhost:{:<5}/ws           │", port);
+    println!("  │     • /healthz (health check)           │");
+    println!("  │     • /join/:room_id (invite page)      │");
+    println!("  │                                         │");
+    println!("  ╰─────────────────────────────────────────╯");
+    println!();
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "hang_server=debug,info".into()),
+                .unwrap_or_else(|_| "hang_server=info".into()),
         )
+        .with_target(false)
+        .compact()
         .init();
 
-    let port = env::var("PORT")
+    let port: u16 = env::var("PORT")
         .ok()
         .and_then(|val| val.parse().ok())
         .unwrap_or(3005);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
+
+    print_banner(port);
 
     let app_state = AppState {
         server_state: ServerState::new(),
@@ -69,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(app_state.clone());
 
     let listener = TcpListener::bind(addr).await?;
-    tracing::info!("{LOG_TAG} Listening on {}", addr);
+    tracing::info!("Server listening on http://{}", addr);
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -115,7 +143,10 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
     let server_state = state.server_state.clone();
     let client_senders = state.client_senders.clone();
     let client_id = Uuid::new_v4();
+    let client_short = &client_id.to_string()[..8];
     server_state.add_client(client_id);
+
+    tracing::info!("↗ Client connected [{}]", client_short);
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
@@ -148,14 +179,14 @@ async fn handle_connection(socket: WebSocket, state: AppState) {
                 if let Err(e) =
                     handle_message(&text, client_id, &server_state, &client_senders).await
                 {
-                    tracing::error!("Error handling message: {}", e);
+                    tracing::error!("[{}] Message error: {}", client_short, e);
                     let _ = tx.send(Message::Error {
                         message: e.to_string(),
                     });
                 }
             }
             Ok(AxumWsMessage::Close(_)) => {
-                tracing::info!("Client {} closing connection", client_id);
+                tracing::info!("↙ Client disconnected [{}]", client_short);
                 break;
             }
             Err(e) => {
@@ -429,10 +460,14 @@ async fn handle_message(
         Message::CreateRoom {
             file_hash,
             passcode,
+            display_name,
+            capacity,
         } => {
             let canonical_hash = file_hash.clone();
-            let (room_id, passcode_enabled) = state.create_room(client_id, file_hash, passcode);
+            let (room_id, passcode_enabled, room_capacity, resolved_name) =
+                state.create_room(client_id, file_hash, passcode, display_name, capacity);
             let resume_token = state.remember_session(client_id, &room_id, &canonical_hash, true);
+            tracing::info!("🏠 Room created [{}] by {} (capacity: {})", room_id, &resolved_name, room_capacity);
             if let Some(tx) = client_senders.read().await.get(&client_id) {
                 let _ = tx.send(Message::RoomCreated {
                     room_id: room_id.clone(),
@@ -440,23 +475,27 @@ async fn handle_message(
                     passcode_enabled,
                     file_hash: canonical_hash,
                     resume_token,
+                    capacity: room_capacity,
+                    display_name: resolved_name,
                 });
             }
-            broadcast_member_count(&state, client_senders, &room_id).await;
+            broadcast_room_state(&state, client_senders, &room_id).await;
         }
 
         Message::JoinRoom {
             room_id,
             file_hash,
             passcode,
+            display_name,
         } => {
             let response = match state
-                .join_room(client_id, &room_id, &file_hash, passcode)
+                .join_room(client_id, &room_id, &file_hash, passcode, display_name)
                 .await
             {
-                Ok((is_host, canonical_hash)) => {
+                Ok((is_host, canonical_hash, room_capacity, resolved_name)) => {
                     let resume_token =
                         state.remember_session(client_id, &room_id, &canonical_hash, is_host);
+                    tracing::info!("👤 {} joined room [{}]{}", &resolved_name, room_id, if is_host { " (host)" } else { "" });
                     Message::RoomJoined {
                         room_id: room_id.clone(),
                         client_id,
@@ -468,6 +507,8 @@ async fn handle_message(
                             .unwrap_or(false),
                         file_hash: canonical_hash,
                         resume_token,
+                        capacity: room_capacity,
+                        display_name: resolved_name,
                     }
                 }
                 Err(e) if e.contains("not found") => Message::RoomNotFound,
@@ -476,6 +517,9 @@ async fn handle_message(
                     let expected = room.map(|r| r.file_hash.clone()).unwrap_or_default();
                     Message::FileHashMismatch { expected }
                 }
+                Err(e) if e.contains("full") => Message::RoomFull {
+                    capacity: state.room_capacity(&room_id),
+                },
                 Err(e) => Message::Error { message: e },
             };
 
@@ -483,20 +527,23 @@ async fn handle_message(
                 let _ = tx.send(response);
             }
 
-            broadcast_member_count(&state, client_senders, &room_id).await;
+            broadcast_room_state(&state, client_senders, &room_id).await;
         }
 
         Message::LeaveRoom => {
             if let Some(room_id) = state.leave_room(client_id).await {
-                broadcast_member_count(&state, client_senders, &room_id).await;
+                broadcast_room_state(&state, client_senders, &room_id).await;
             }
             state.clear_session(client_id);
             if let Some(tx) = client_senders.read().await.get(&client_id) {
                 let _ = tx.send(Message::RoomLeft);
             }
         }
-        Message::ResumeSession { token } => {
-            let response = state.resume_session(client_id, &token).await;
+        Message::ResumeSession {
+            token,
+            display_name,
+        } => {
+            let response = state.resume_session(client_id, &token, display_name).await;
             if let Some(tx) = client_senders.read().await.get(&client_id) {
                 match response {
                     Ok(outcome) => {
@@ -507,8 +554,10 @@ async fn handle_message(
                             passcode_enabled: outcome.passcode_enabled,
                             file_hash: outcome.file_hash.clone(),
                             resume_token: outcome.resume_token.clone(),
+                            capacity: outcome.capacity,
+                            display_name: outcome.display_name.clone(),
                         });
-                        broadcast_member_count(&state, client_senders, &outcome.room_id).await;
+                        broadcast_room_state(&state, client_senders, &outcome.room_id).await;
                     }
                     Err(err) => {
                         let _ = tx.send(Message::Error { message: err });
@@ -568,23 +617,22 @@ async fn broadcast_to_room(
     }
 }
 
-async fn broadcast_member_count(
-    state: &ServerState,
-    client_senders: &ClientSenders,
-    room_id: &str,
-) {
-    let members = state.get_room_members(room_id).await;
-    let count = members.len();
-    if count == 0 {
+async fn broadcast_room_state(state: &ServerState, client_senders: &ClientSenders, room_id: &str) {
+    let Some((roster, capacity)) = state.room_snapshot(room_id).await else {
+        return;
+    };
+    if roster.is_empty() {
         return;
     }
+    let update = Message::RoomMemberUpdate {
+        room_id: room_id.to_string(),
+        members: roster.clone(),
+        capacity,
+    };
     let senders = client_senders.read().await;
-    for member_id in members {
-        if let Some(tx) = senders.get(&member_id) {
-            let _ = tx.send(Message::RoomMemberUpdate {
-                room_id: room_id.to_string(),
-                members: count,
-            });
+    for member in &roster {
+        if let Some(tx) = senders.get(&member.client_id) {
+            let _ = tx.send(update.clone());
         }
     }
 }

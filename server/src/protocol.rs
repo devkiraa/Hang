@@ -9,14 +9,18 @@ pub enum Message {
     CreateRoom {
         file_hash: String,
         passcode: Option<String>,
+        display_name: Option<String>,
+        capacity: Option<usize>,
     },
     JoinRoom {
         room_id: String,
         file_hash: String,
         passcode: Option<String>,
+        display_name: Option<String>,
     },
     ResumeSession {
         token: String,
+        display_name: Option<String>,
     },
     LeaveRoom,
     SyncCommand(SyncCommand),
@@ -28,6 +32,8 @@ pub enum Message {
         passcode_enabled: bool,
         file_hash: String,
         resume_token: String,
+        capacity: usize,
+        display_name: String,
     },
     RoomJoined {
         room_id: String,
@@ -36,9 +42,14 @@ pub enum Message {
         passcode_enabled: bool,
         file_hash: String,
         resume_token: String,
+        capacity: usize,
+        display_name: String,
     },
     RoomLeft,
     RoomNotFound,
+    RoomFull {
+        capacity: usize,
+    },
     FileHashMismatch {
         expected: String,
     },
@@ -48,7 +59,8 @@ pub enum Message {
     },
     RoomMemberUpdate {
         room_id: String,
-        members: usize,
+        members: Vec<MemberSummary>,
+        capacity: usize,
     },
     Error {
         message: String,
@@ -72,10 +84,19 @@ pub struct Room {
     pub host_id: Uuid,
     pub file_hash: String,
     pub passcode_hash: Option<String>,
+    pub capacity: usize,
 }
 
 /// Client connection metadata
 #[derive(Debug, Clone)]
 pub struct ClientInfo {
     pub room_id: Option<String>,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemberSummary {
+    pub client_id: Uuid,
+    pub display_name: String,
+    pub is_host: bool,
 }

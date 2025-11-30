@@ -13,6 +13,8 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+Add-Type -AssemblyName System.Net.Http
+
 $root = Resolve-Path (Join-Path $PSScriptRoot '..')
 $exeSource = Join-Path $root 'target\release\hang-client.exe'
 if (-not (Test-Path $exeSource)) {
@@ -35,16 +37,87 @@ if (-not (Test-Path $cacheDir)) {
 $zipName = "vlc-$VlcVersion-win64.zip"
 $zipPath = Join-Path $cacheDir $zipName
 $vlcUrl = "https://downloads.videolan.org/pub/videolan/vlc/$VlcVersion/win64/$zipName"
+
+function Invoke-FileDownload {
+    param(
+        [string]$Url,
+        [string]$Destination,
+        [string]$Label
+    )
+
+    $tempPath = "$Destination.partial"
+    if (Test-Path $tempPath) {
+        Remove-Item $tempPath -Force
+    }
+    if (Test-Path $Destination) {
+        Remove-Item $Destination -Force
+    }
+
+    $client = [System.Net.Http.HttpClient]::new()
+    try {
+        $response = $client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
+        if (-not $response.IsSuccessStatusCode) {
+            throw "Failed to download ${Label}: $($response.StatusCode)"
+        }
+        $total = $response.Content.Headers.ContentLength
+        $input = $response.Content.ReadAsStreamAsync().Result
+        $output = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        try {
+            $buffer = New-Object byte[] (256 * 1024)
+            $totalRead = 0L
+            while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $output.Write($buffer, 0, $read)
+                $totalRead += $read
+                if ($total) {
+                    $percent = [int](([double]$totalRead / [double]$total) * 100)
+                    $status = "{0:N1} MB / {1:N1} MB" -f ($totalRead / 1MB), ($total / 1MB)
+                } else {
+                    $percent = 0
+                    $status = "{0:N1} MB downloaded" -f ($totalRead / 1MB)
+                }
+                Write-Progress -Activity "Downloading $Label" -Status $status -PercentComplete $percent
+            }
+        }
+        finally {
+            $output.Dispose()
+            $input.Dispose()
+        }
+    }
+    finally {
+        $client.Dispose()
+    }
+
+    Move-Item -Path $tempPath -Destination $Destination -Force
+    Write-Progress -Activity "Downloading $Label" -Completed
+}
+
+function Get-VlcArchive {
+    param(
+        [string]$Url,
+        [string]$Destination
+    )
+
+    Invoke-FileDownload -Url $Url -Destination $Destination -Label "VLC runtime $VlcVersion"
+}
+
 if (-not (Test-Path $zipPath)) {
-    Write-Host "Downloading VLC runtime $VlcVersion..."
-    Invoke-WebRequest -Uri $vlcUrl -OutFile $zipPath -UseBasicParsing
+    Get-VlcArchive -Url $vlcUrl -Destination $zipPath
 }
 
 $extractDir = Join-Path $cacheDir "vlc-$VlcVersion"
 if (Test-Path $extractDir) {
     Remove-Item $extractDir -Recurse -Force
 }
-Expand-Archive -Path $zipPath -DestinationPath $extractDir
+
+try {
+    Expand-Archive -Path $zipPath -DestinationPath $extractDir -ErrorAction Stop
+}
+catch {
+    Write-Warning "Cached VLC archive appears to be corrupt. Re-downloading..."
+    Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+    Get-VlcArchive -Url $vlcUrl -Destination $zipPath
+    Expand-Archive -Path $zipPath -DestinationPath $extractDir -ErrorAction Stop
+}
 
 $vlcRoot = Get-ChildItem -Path $extractDir | Where-Object { $_.PSIsContainer } | Select-Object -First 1
 if (-not $vlcRoot) {
@@ -69,6 +142,7 @@ foreach ($license in $licenseFiles) {
         Copy-Item -Path $licensePath -Destination (Join-Path $runtimeDir $license) -Force
     }
 }
+
 
 if ($MinimalRuntime) {
     Write-Host "Pruning optional VLC assets for smaller payload..."
