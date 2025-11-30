@@ -6,12 +6,6 @@ on:
       version:
         description: "Version tag (e.g. v1.2.3)"
         required: true
-      title:
-        description: "Release title"
-        required: true
-      notes:
-        description: "Release description / changelog"
-        required: true
 
 permissions:
   contents: write
@@ -67,8 +61,43 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ inputs.version }}
-          name: ${{ inputs.title }}
-          body: ${{ inputs.notes }}
+          name: Hang ${{ inputs.version }}
+          body: |
+            ## 🎬 Hang ${{ inputs.version }}
+            
+            Watch movies together with friends, perfectly synced.
+            
+            ### 📦 Downloads
+            
+            | File | Description |
+            |------|-------------|
+            | `Hang ${{ inputs.version }}.msi` | Windows Installer (recommended) |
+            | `Hang ${{ inputs.version }}.exe` | Portable executable |
+            
+            ### ✨ Features
+            
+            - 🎥 **Synchronized Playback** - Watch together in perfect sync
+            - 🔗 **Invite Links** - Share a link to invite friends instantly
+            - 🎛️ **Media Controls** - Play, pause, seek - all synced across viewers
+            - 🔊 **Audio & Subtitle Switching** - Change tracks without losing sync
+            - 📊 **Network Stats** - Real-time latency and connection info
+            - 🔄 **Auto-Reconnect** - Seamless reconnection if connection drops
+            
+            ### 💻 System Requirements
+            
+            - Windows 10/11 (64-bit)
+            - Microsoft Visual C++ Redistributable 2015-2022
+            
+            ### 🚀 Getting Started
+            
+            1. Download and install the MSI or run the portable EXE
+            2. Open a video file
+            3. Create a room and share the invite link with friends
+            4. Enjoy watching together!
+            
+            ---
+            
+            ☕ [Support the project](https://buymeacoffee.com/devkiraa) | 🐛 [Report issues](https://github.com/devkiraa/Hang/issues) | 📖 [Documentation](https://github.com/devkiraa/Hang#readme)
           files: |
             ${{ env.ASSET_EXE }}
             ${{ env.ASSET_MSI }}
