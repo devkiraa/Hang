@@ -9,6 +9,7 @@ mod sync;
 mod ui;
 mod update;
 mod utils;
+mod youtube;
 
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -135,6 +136,12 @@ struct AppWrapper {
 impl eframe::App for AppWrapper {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.app.lock().update(ctx, frame);
+    }
+    
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Perform smooth cleanup before exit
+        let mut app = self.app.lock();
+        app.cleanup();
     }
 }
 

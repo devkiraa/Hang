@@ -15,6 +15,7 @@ use crate::{
     sync::{get_data_directory, is_portable_mode, PersistedSession, SyncClient, SyncStatsSnapshot},
     update::{self, UpdateInfo},
     utils::{compute_file_hash, format_time},
+    youtube,
 };
 use uuid::Uuid;
 
@@ -90,6 +91,16 @@ pub struct HangApp {
     update_check_done: bool,
     show_url_dialog: bool,
     url_input: String,
+    youtube_quality: youtube::VideoQuality,
+    youtube_loader: Option<youtube::YouTubeLoader>,
+    youtube_loading_url: Option<String>,
+    current_youtube_url: Option<String>,  // Store current YouTube URL for quality changes
+    pending_youtube_seek_position: Option<f64>,  // Seek position to restore after quality change
+    
+    // Buffering state
+    is_buffering: bool,
+    last_frame_time: std::time::Instant,
+    buffering_start_time: Option<std::time::Instant>,
 
     // Video rendering
     video_texture: Option<egui::TextureHandle>,
@@ -155,6 +166,14 @@ impl HangApp {
             update_check_done: false,
             show_url_dialog: false,
             url_input: String::new(),
+            youtube_quality: youtube::VideoQuality::default(),
+            youtube_loader: None,
+            youtube_loading_url: None,
+            current_youtube_url: None,
+            pending_youtube_seek_position: None,
+            is_buffering: false,
+            last_frame_time: std::time::Instant::now(),
+            buffering_start_time: None,
             video_texture: None,
             last_frame_size: None,
         }
@@ -165,6 +184,34 @@ impl HangApp {
         if let Some(flag) = connected {
             self.sync_connected = flag;
         }
+    }
+    
+    /// Clean up resources before app exit for smooth shutdown
+    pub fn cleanup(&mut self) {
+        tracing::info!("Cleaning up before exit...");
+        
+        // Stop any playing video
+        if self.is_playing {
+            let _ = self.player.stop();
+            self.is_playing = false;
+        }
+        
+        // Cancel any pending YouTube loader
+        self.youtube_loader = None;
+        self.youtube_loading_url = None;
+        
+        // Clear video texture
+        self.video_texture = None;
+        
+        // Leave room if connected
+        if self.in_room {
+            let _ = self.sync.leave_room();
+        }
+        
+        // Small delay to let cleanup complete
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        tracing::info!("Cleanup complete");
     }
 
     fn load_video_from_path(&mut self, path: &Path) -> Result<(), String> {
@@ -490,6 +537,12 @@ impl HangApp {
             return;
         }
         
+        // Check if this is a YouTube URL
+        if youtube::is_youtube_url(&url) {
+            self.load_youtube_video(&url);
+            return;
+        }
+        
         // Try to load the URL directly in VLC
         match self.player.load_url(&url) {
             Ok(()) => {
@@ -514,6 +567,94 @@ impl HangApp {
             }
             Err(e) => {
                 self.error_message = Some(format!("Failed to load URL: {}", e));
+            }
+        }
+    }
+    
+    fn load_youtube_video(&mut self, url: &str) {
+        // Start async loading - won't block UI
+        self.youtube_loading_url = Some(url.to_string());
+        self.youtube_loader = Some(youtube::YouTubeLoader::start(
+            url.to_string(),
+            self.youtube_quality,
+        ));
+        self.status_message = if youtube::is_ytdlp_available() {
+            "Loading YouTube video...".into()
+        } else {
+            "Downloading yt-dlp (first time only)...".into()
+        };
+        self.show_url_dialog = false;
+        self.url_input.clear();
+    }
+    
+    fn load_youtube_video_at_position(&mut self, url: &str, seek_position: f64) {
+        // Start async loading for quality change - will seek after load
+        self.youtube_loading_url = Some(url.to_string());
+        self.pending_youtube_seek_position = Some(seek_position);  // Store position to restore
+        self.youtube_loader = Some(youtube::YouTubeLoader::start(
+            url.to_string(),
+            self.youtube_quality,
+        ));
+        self.status_message = format!("Changing quality to {}...", self.youtube_quality.as_str());
+        self.is_buffering = true;
+    }
+    
+    fn poll_youtube_loader(&mut self) {
+        if let Some(ref loader) = self.youtube_loader {
+            if let Some(result) = loader.try_recv() {
+                match result {
+                    youtube::YouTubeLoadResult::Downloading => {
+                        self.status_message = "Downloading yt-dlp (first time only, ~10MB)...".into();
+                    }
+                    youtube::YouTubeLoadResult::Success(video_info) => {
+                        // Extract video ID for consistent hashing
+                        let url = self.youtube_loading_url.take().unwrap_or_default();
+                        let video_id = youtube::extract_video_id(&url).unwrap_or_else(|| url.clone());
+                        let hash = crate::utils::compute_string_hash(&video_id);
+                        
+                        // Check if we need to restore a seek position (quality change)
+                        let pending_seek = self.pending_youtube_seek_position.take();
+                        
+                        // Load the direct stream URL
+                        match self.player.load_url(&video_info.stream_url) {
+                            Ok(()) => {
+                                self.video_file = Some(PathBuf::from(format!("youtube://{}", video_id)));
+                                self.video_hash = Some(hash);
+                                self.video_texture = None;
+                                self.last_frame_size = None;
+                                self.current_youtube_url = Some(url);  // Save URL for quality changes
+                                self.status_message = format!("Playing: {} ({})", video_info.title, video_info.quality.as_str());
+                                self.error_message = None;
+                                
+                                // Auto-play
+                                if let Err(e) = self.player.play() {
+                                    self.error_message = Some(format!("Failed to auto-play: {}", e));
+                                } else {
+                                    self.is_playing = true;
+                                    
+                                    // Restore position if this was a quality change
+                                    if let Some(position) = pending_seek {
+                                        // Short delay to let player initialize
+                                        std::thread::sleep(std::time::Duration::from_millis(100));
+                                        if let Err(e) = self.player.seek(position) {
+                                            tracing::warn!("Failed to restore position after quality change: {}", e);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.error_message = Some(format!("Failed to load stream: {}", e));
+                            }
+                        }
+                        self.youtube_loader = None;
+                    }
+                    youtube::YouTubeLoadResult::Error(e) => {
+                        self.error_message = Some(format!("YouTube error: {}", e));
+                        self.youtube_loader = None;
+                        self.youtube_loading_url = None;
+                        self.current_youtube_url = None;
+                    }
+                }
             }
         }
     }
@@ -639,13 +780,35 @@ impl HangApp {
     }
 
     fn seek(&mut self, position: f64) {
+        // Start buffering indicator for YouTube/URL videos
+        if self.is_youtube_video() || self.is_url_video() {
+            self.is_buffering = true;
+            self.buffering_start_time = Some(std::time::Instant::now());
+        }
+        
         if let Err(e) = self.player.seek(position) {
             self.error_message = Some(format!("Seek error: {}", e));
+            self.is_buffering = false;
         } else if self.sync_enabled && self.in_room {
             let _ = self.sync.send_sync_command(SyncCommand::Seek {
                 timestamp: position,
             });
         }
+    }
+    
+    fn is_youtube_video(&self) -> bool {
+        self.video_file.as_ref()
+            .map(|p| p.to_string_lossy().starts_with("youtube://"))
+            .unwrap_or(false)
+    }
+    
+    fn is_url_video(&self) -> bool {
+        self.video_file.as_ref()
+            .map(|p| {
+                let s = p.to_string_lossy();
+                s.starts_with("http://") || s.starts_with("https://")
+            })
+            .unwrap_or(false)
     }
 
     fn set_volume(&mut self, volume: f64) {
@@ -845,6 +1008,22 @@ impl HangApp {
                     ));
                 }
                 self.last_frame_size = Some((frame.width, frame.height));
+                
+                // New frame received - stop buffering indicator
+                self.last_frame_time = std::time::Instant::now();
+                if self.is_buffering {
+                    self.is_buffering = false;
+                    self.buffering_start_time = None;
+                }
+            }
+        }
+        
+        // Detect stalled playback (no new frames for 500ms while playing)
+        if self.is_playing && (self.is_youtube_video() || self.is_url_video()) {
+            let elapsed = self.last_frame_time.elapsed();
+            if elapsed.as_millis() > 500 && !self.is_buffering {
+                self.is_buffering = true;
+                self.buffering_start_time = Some(std::time::Instant::now());
             }
         }
     }
@@ -1396,6 +1575,92 @@ impl HangApp {
 
         self.controls_visible = hover.unwrap_or(false);
     }
+    
+    fn draw_loading_spinner(&self, ui: &mut egui::Ui) {
+        let time = ui.input(|i| i.time);
+        let angle = time * 2.0; // Rotation speed
+        
+        ui.vertical_centered(|ui| {
+            // Draw spinning circle
+            let size = 40.0;
+            let (response, painter) = ui.allocate_painter(egui::vec2(size, size), egui::Sense::hover());
+            let center = response.rect.center();
+            let radius = size / 2.0 - 4.0;
+            
+            // Draw arc segments
+            let segments = 8;
+            for i in 0..segments {
+                let start_angle = angle + (i as f64 * std::f64::consts::TAU / segments as f64);
+                let alpha = ((i as f32 / segments as f32) * 200.0) as u8 + 55;
+                let color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha);
+                
+                let p1 = center + egui::vec2(
+                    (start_angle.cos() * radius as f64) as f32,
+                    (start_angle.sin() * radius as f64) as f32,
+                );
+                let end_angle = start_angle + std::f64::consts::TAU / segments as f64 * 0.7;
+                let p2 = center + egui::vec2(
+                    (end_angle.cos() * radius as f64) as f32,
+                    (end_angle.sin() * radius as f64) as f32,
+                );
+                
+                painter.line_segment([p1, p2], egui::Stroke::new(3.0, color));
+            }
+            
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new("Loading...").color(egui::Color32::WHITE));
+        });
+    }
+    
+    fn draw_buffering_overlay(&self, ui: &mut egui::Ui, _available: egui::Vec2) {
+        // Get the screen rect to center the overlay properly
+        let screen_rect = ui.ctx().screen_rect();
+        
+        // Semi-transparent overlay in center of screen
+        let overlay_size = egui::vec2(120.0, 80.0);
+        let overlay_rect = egui::Rect::from_center_size(screen_rect.center(), overlay_size);
+        
+        // Draw background
+        ui.painter().rect_filled(
+            overlay_rect,
+            8.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 180),
+        );
+        
+        // Draw spinner in overlay
+        let time = ui.input(|i| i.time);
+        let angle = time * 3.0;
+        let center = overlay_rect.center();
+        let radius = 15.0;
+        
+        let segments = 8;
+        for i in 0..segments {
+            let start_angle = angle + (i as f64 * std::f64::consts::TAU / segments as f64);
+            let alpha = ((i as f32 / segments as f32) * 200.0) as u8 + 55;
+            let color = egui::Color32::from_rgba_unmultiplied(255, 255, 255, alpha);
+            
+            let p1 = center + egui::vec2(
+                (start_angle.cos() * radius as f64) as f32,
+                (start_angle.sin() * radius as f64) as f32,
+            );
+            let end_angle = start_angle + std::f64::consts::TAU / segments as f64 * 0.7;
+            let p2 = center + egui::vec2(
+                (end_angle.cos() * radius as f64) as f32,
+                (end_angle.sin() * radius as f64) as f32,
+            );
+            
+            ui.painter().line_segment([p1, p2], egui::Stroke::new(2.5, color));
+        }
+        
+        // Buffering text
+        ui.painter().text(
+            center + egui::vec2(0.0, 28.0),
+            egui::Align2::CENTER_CENTER,
+            "Buffering...",
+            egui::FontId::proportional(12.0),
+            egui::Color32::WHITE,
+        );
+    }
 }
 
 impl eframe::App for HangApp {
@@ -1404,7 +1669,14 @@ impl eframe::App for HangApp {
         self.update_video_texture(ctx);
         self.handle_file_drop(ctx);
         self.poll_invite_channel();
+        self.poll_youtube_loader();
         self.handle_keyboard_shortcuts(ctx);
+        
+        // Request repaint while YouTube is loading
+        if self.youtube_loader.is_some() {
+            ctx.request_repaint();
+        }
+        
         if self.is_fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.is_fullscreen = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
@@ -1583,10 +1855,46 @@ impl eframe::App for HangApp {
         // Settings window
         if self.show_settings {
             let mut settings_open = self.show_settings;
+            let mut quality_changed: Option<youtube::VideoQuality> = None;
+            
             egui::Window::new("Settings")
                 .open(&mut settings_open)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
+                    // YouTube Quality section (only show when playing YouTube)
+                    if self.current_youtube_url.is_some() {
+                        ui.heading("🎬 Video Quality");
+                        ui.add_space(4.0);
+                        
+                        ui.horizontal(|ui| {
+                            ui.label("Quality:");
+                            egui::ComboBox::from_id_salt("settings_youtube_quality")
+                                .selected_text(self.youtube_quality.as_str())
+                                .show_ui(ui, |ui| {
+                                    for quality in youtube::VideoQuality::all() {
+                                        if ui.selectable_value(
+                                            &mut self.youtube_quality,
+                                            *quality,
+                                            quality.as_str(),
+                                        ).clicked() {
+                                            quality_changed = Some(*quality);
+                                        }
+                                    }
+                                });
+                        });
+                        
+                        if self.youtube_loader.is_some() {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label("Changing quality...");
+                            });
+                        }
+                        
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                    }
+                    
                     if ui.button("Refresh Tracks").clicked() {
                         if let Err(e) = self.refresh_media_tracks() {
                             self.error_message = Some(e);
@@ -1631,6 +1939,15 @@ impl eframe::App for HangApp {
                     }
                 });
             self.show_settings = settings_open;
+            
+            // Handle quality change - reload video with new quality
+            if let Some(_new_quality) = quality_changed {
+                if let Some(url) = self.current_youtube_url.clone() {
+                    // Save current position to resume after quality change
+                    let current_pos = self.current_position;
+                    self.load_youtube_video_at_position(&url, current_pos);
+                }
+            }
         }
 
         if self.show_about {
@@ -1731,29 +2048,49 @@ impl eframe::App for HangApp {
         if self.show_url_dialog {
             let mut load_url = false;
             let mut close_dialog = false;
+            let is_youtube = youtube::is_youtube_url(&self.url_input);
             
             egui::Window::new("Open URL")
                 .collapsible(false)
                 .resizable(false)
-                .min_width(400.0)
+                .min_width(420.0)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.label("Enter a direct video URL:");
+                    ui.label("Enter a video URL:");
                     ui.add_space(4.0);
                     
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.url_input)
-                            .hint_text("https://example.com/video.mp4")
-                            .desired_width(380.0)
+                            .hint_text("https://youtube.com/watch?v=... or direct URL")
+                            .desired_width(400.0)
                     );
                     
                     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         load_url = true;
                     }
                     
+                    // Quality selector for YouTube URLs
+                    if is_youtube {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Quality:");
+                            egui::ComboBox::from_id_salt("youtube_quality")
+                                .selected_text(self.youtube_quality.as_str())
+                                .show_ui(ui, |ui| {
+                                    for quality in youtube::VideoQuality::all() {
+                                        ui.selectable_value(
+                                            &mut self.youtube_quality,
+                                            *quality,
+                                            quality.as_str(),
+                                        );
+                                    }
+                                });
+                        });
+                    }
+                    
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Load").clicked() {
+                        if ui.button("▶ Load").clicked() {
                             load_url = true;
                         }
                         if ui.button("Cancel").clicked() {
@@ -1761,12 +2098,20 @@ impl eframe::App for HangApp {
                         }
                     });
                     
+                    ui.add_space(8.0);
+                    ui.separator();
                     ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("Supports: MP4, MKV, AVI, MOV, WebM URLs")
-                            .small()
-                            .color(egui::Color32::GRAY)
-                    );
+                    
+                    // Show supported formats
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("📁 Direct URLs:").small().strong());
+                        ui.label(egui::RichText::new("MP4, MKV, AVI, MOV, WebM").small().color(egui::Color32::GRAY));
+                    });
+                    
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("▶ YouTube:").small().strong());
+                        ui.label(egui::RichText::new("✓ Supported (auto-downloads yt-dlp)").small().color(egui::Color32::from_rgb(100, 200, 100)));
+                    });
                 });
             
             if close_dialog {
@@ -1795,8 +2140,9 @@ impl eframe::App for HangApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
+                let available = ui.available_size();
+                
                 if let Some(texture) = &self.video_texture {
-                    let available = ui.available_size();
                     let draw_size = self.fitted_video_size(available);
                     ui.allocate_ui_with_layout(
                         available,
@@ -1805,13 +2151,17 @@ impl eframe::App for HangApp {
                             ui.image((texture.id(), draw_size));
                         },
                     );
-                } else if self.video_file.is_some() {
-                    let available = ui.available_size();
+                    
+                    // Show buffering overlay on top of video
+                    if self.is_buffering {
+                        self.draw_buffering_overlay(ui, available);
+                    }
+                } else if self.video_file.is_some() || self.youtube_loader.is_some() {
                     ui.allocate_ui_with_layout(
                         available,
                         egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
                         |ui| {
-                            ui.heading("Loading video...");
+                            self.draw_loading_spinner(ui);
                         },
                     );
                 }
