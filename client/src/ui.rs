@@ -1,6 +1,7 @@
 use eframe::egui;
 use parking_lot::Mutex;
 use std::{
+    collections::VecDeque,
     env,
     path::{Path, PathBuf},
     sync::Arc,
@@ -25,6 +26,101 @@ const KEYBOARD_VOLUME_STEP: f64 = 5.0;
 const ROOM_CAPACITY_MIN: u32 = 2;
 const ROOM_CAPACITY_MAX: u32 = 32;
 const DEFAULT_ROOM_CAPACITY: u32 = 12;
+const MAX_RECENT_FILES: usize = 10;
+const CURSOR_HIDE_DELAY_SECS: f64 = 3.0;
+
+/// Aspect ratio modes for video display
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum AspectRatioMode {
+    Original,   // Keep original video aspect ratio
+    Fit,        // Fit to window (same as Original)
+    Fill,       // Fill entire area (may crop)
+    Ratio16_9,  // Force 16:9
+    Ratio4_3,   // Force 4:3
+    Ratio21_9,  // Force 21:9 (ultrawide)
+}
+
+impl AspectRatioMode {
+    pub fn all() -> &'static [AspectRatioMode] {
+        &[
+            AspectRatioMode::Original,
+            AspectRatioMode::Fill,
+            AspectRatioMode::Ratio16_9,
+            AspectRatioMode::Ratio4_3,
+            AspectRatioMode::Ratio21_9,
+        ]
+    }
+    
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AspectRatioMode::Original => "Original",
+            AspectRatioMode::Fit => "Fit",
+            AspectRatioMode::Fill => "Fill",
+            AspectRatioMode::Ratio16_9 => "16:9",
+            AspectRatioMode::Ratio4_3 => "4:3",
+            AspectRatioMode::Ratio21_9 => "21:9",
+        }
+    }
+    
+}
+
+
+impl Default for AspectRatioMode {
+    fn default() -> Self {
+        AspectRatioMode::Original
+    }
+}
+
+/// Toast notification
+#[derive(Clone)]
+struct Toast {
+    message: String,
+    color: egui::Color32,
+    created_at: std::time::Instant,
+    duration_secs: f32,
+}
+
+impl Toast {
+    fn new(message: impl Into<String>, color: egui::Color32) -> Self {
+        Self {
+            message: message.into(),
+            color,
+            created_at: std::time::Instant::now(),
+            duration_secs: 3.0,
+        }
+    }
+    
+    fn info(message: impl Into<String>) -> Self {
+        Self::new(message, egui::Color32::from_rgb(100, 180, 255))
+    }
+    
+    fn success(message: impl Into<String>) -> Self {
+        Self::new(message, egui::Color32::from_rgb(100, 255, 150))
+    }
+    
+    fn warning(message: impl Into<String>) -> Self {
+        Self::new(message, egui::Color32::from_rgb(255, 200, 100))
+    }
+    
+    fn error(message: impl Into<String>) -> Self {
+        Self::new(message, egui::Color32::from_rgb(255, 100, 100))
+    }
+    
+    fn is_expired(&self) -> bool {
+        self.created_at.elapsed().as_secs_f32() > self.duration_secs
+    }
+    
+    fn opacity(&self) -> f32 {
+        let elapsed = self.created_at.elapsed().as_secs_f32();
+        let fade_start = self.duration_secs - 0.5;
+        if elapsed > fade_start {
+            1.0 - ((elapsed - fade_start) / 0.5).min(1.0)
+        } else {
+            1.0
+        }
+    }
+}
 
 pub struct HangApp {
     // Video player
@@ -105,6 +201,23 @@ pub struct HangApp {
     // Video rendering
     video_texture: Option<egui::TextureHandle>,
     last_frame_size: Option<(u32, u32)>,
+    
+    // Aspect ratio
+    aspect_ratio_mode: AspectRatioMode,
+    
+    // Recent files
+    recent_files: VecDeque<PathBuf>,
+    
+    // Toast notifications
+    toasts: Vec<Toast>,
+    
+    // Cursor auto-hide
+    last_mouse_move: std::time::Instant,
+    last_mouse_pos: Option<egui::Pos2>,
+    cursor_visible: bool,
+    
+    // Drag & drop visual feedback
+    is_dragging_file: bool,
 }
 
 impl HangApp {
@@ -176,6 +289,13 @@ impl HangApp {
             buffering_start_time: None,
             video_texture: None,
             last_frame_size: None,
+            aspect_ratio_mode: AspectRatioMode::default(),
+            recent_files: Self::load_recent_files(),
+            toasts: Vec::new(),
+            last_mouse_move: std::time::Instant::now(),
+            last_mouse_pos: None,
+            cursor_visible: true,
+            is_dragging_file: false,
         }
     }
 
@@ -213,6 +333,165 @@ impl HangApp {
         
         tracing::info!("Cleanup complete");
     }
+    
+    // ===== Recent Files =====
+    
+    fn get_recent_files_path() -> Option<PathBuf> {
+        get_data_directory().map(|d| d.join("recent_files.txt"))
+    }
+    
+    fn load_recent_files() -> VecDeque<PathBuf> {
+        if let Some(path) = Self::get_recent_files_path() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                return contents
+                    .lines()
+                    .filter_map(|line| {
+                        let p = PathBuf::from(line);
+                        if p.exists() { Some(p) } else { None }
+                    })
+                    .take(MAX_RECENT_FILES)
+                    .collect();
+            }
+        }
+        VecDeque::new()
+    }
+    
+    fn save_recent_files(&self) {
+        if let Some(path) = Self::get_recent_files_path() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let contents: String = self.recent_files
+                .iter()
+                .filter_map(|p| p.to_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = std::fs::write(path, contents);
+        }
+    }
+    
+    fn add_to_recent_files(&mut self, path: &Path) {
+        // Remove if already exists
+        self.recent_files.retain(|p| p != path);
+        // Add to front
+        self.recent_files.push_front(path.to_path_buf());
+        // Trim to max
+        while self.recent_files.len() > MAX_RECENT_FILES {
+            self.recent_files.pop_back();
+        }
+        self.save_recent_files();
+    }
+    
+    // ===== Toast Notifications =====
+    
+    fn show_toast(&mut self, toast: Toast) {
+        self.toasts.push(toast);
+    }
+    
+    fn toast_info(&mut self, message: impl Into<String>) {
+        self.show_toast(Toast::info(message));
+    }
+    
+    fn toast_success(&mut self, message: impl Into<String>) {
+        self.show_toast(Toast::success(message));
+    }
+    
+    fn toast_warning(&mut self, message: impl Into<String>) {
+        self.show_toast(Toast::warning(message));
+    }
+    
+    fn toast_error(&mut self, message: impl Into<String>) {
+        self.show_toast(Toast::error(message));
+    }
+    
+    fn update_toasts(&mut self) {
+        self.toasts.retain(|t| !t.is_expired());
+    }
+    
+    fn render_toasts(&self, ctx: &egui::Context) {
+        if self.toasts.is_empty() {
+            return;
+        }
+        
+        let screen_rect = ctx.screen_rect();
+        let toast_width = 300.0;
+        let toast_height = 40.0;
+        let margin = 20.0;
+        let spacing = 10.0;
+        
+        for (i, toast) in self.toasts.iter().enumerate() {
+            let opacity = toast.opacity();
+            let y_offset = margin + (i as f32) * (toast_height + spacing);
+            
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(screen_rect.max.x - toast_width - margin, screen_rect.min.y + y_offset),
+                egui::vec2(toast_width, toast_height),
+            );
+            
+            egui::Area::new(egui::Id::new(format!("toast_{}", i)))
+                .fixed_pos(rect.min)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    let bg_color = egui::Color32::from_rgba_unmultiplied(30, 30, 30, (220.0 * opacity) as u8);
+                    let text_color = egui::Color32::from_rgba_unmultiplied(
+                        toast.color.r(),
+                        toast.color.g(),
+                        toast.color.b(),
+                        (255.0 * opacity) as u8,
+                    );
+                    
+                    egui::Frame::none()
+                        .fill(bg_color)
+                        .rounding(8.0)
+                        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                        .show(ui, |ui| {
+                            ui.set_min_size(egui::vec2(toast_width - 24.0, toast_height - 16.0));
+                            ui.horizontal_centered(|ui| {
+                                ui.label(egui::RichText::new(&toast.message).color(text_color));
+                            });
+                        });
+                });
+        }
+        
+        // Request repaint for animations
+        if !self.toasts.is_empty() {
+            ctx.request_repaint();
+        }
+    }
+    
+    // ===== Cursor Auto-hide =====
+    
+    fn update_cursor_visibility(&mut self, ctx: &egui::Context) {
+        let current_pos = ctx.input(|i| i.pointer.hover_pos());
+        
+        // Check if mouse moved
+        let mouse_moved = match (current_pos, self.last_mouse_pos) {
+            (Some(curr), Some(last)) => (curr - last).length() > 1.0,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        
+        if mouse_moved {
+            self.last_mouse_move = std::time::Instant::now();
+            self.cursor_visible = true;
+        }
+        
+        self.last_mouse_pos = current_pos;
+        
+        // Hide cursor after inactivity during playback
+        if self.is_playing && self.is_fullscreen {
+            let elapsed = self.last_mouse_move.elapsed().as_secs_f64();
+            if elapsed > CURSOR_HIDE_DELAY_SECS {
+                self.cursor_visible = false;
+            }
+        } else {
+            self.cursor_visible = true;
+        }
+        
+        // Apply cursor visibility - using custom cursor or default
+        // Note: egui doesn't have direct cursor hide, so we use a workaround
+        // by checking this in control visibility logic
+    }
 
     fn load_video_from_path(&mut self, path: &Path) -> Result<(), String> {
         self.player.load_file(path)?;
@@ -229,6 +508,16 @@ impl HangApp {
                 .unwrap_or("unknown")
         );
         self.error_message = None;
+        
+        // Add to recent files
+        self.add_to_recent_files(path);
+        
+        // Show toast notification
+        let filename = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("video")
+            .to_string();
+        self.toast_success(format!("Loaded: {}", filename));
 
         if let Err(e) = self.refresh_media_tracks() {
             self.error_message = Some(e);
@@ -325,7 +614,28 @@ impl HangApp {
     }
 
     fn apply_member_roster(&mut self, roster: Vec<MemberSummary>, capacity: usize) {
+        let old_count = self.participant_count;
         self.participant_count = roster.len().max(1);
+        
+        // Show toast for member changes
+        if self.in_room && old_count > 0 {
+            if self.participant_count > old_count {
+                // Someone joined
+                if let Some(new_member) = roster.iter().find(|m| {
+                    !self.member_roster.iter().any(|old| old.client_id == m.client_id)
+                }) {
+                    self.toast_info(format!("{} joined", new_member.display_name));
+                }
+            } else if self.participant_count < old_count {
+                // Someone left
+                if let Some(left_member) = self.member_roster.iter().find(|m| {
+                    !roster.iter().any(|new| new.client_id == m.client_id)
+                }) {
+                    self.toast_warning(format!("{} left", left_member.display_name));
+                }
+            }
+        }
+        
         self.member_roster = roster;
         self.room_capacity_limit = Some(capacity);
         self.room_capacity_input = capacity as u32;
@@ -844,6 +1154,7 @@ impl HangApp {
                 self.is_host = true;
                 self.participant_count = 1;
                 self.status_message = format!("Room created: {}", room_id);
+                self.toast_success(format!("Room created: {}", room_id));
                 self.room_id_input = room_id.clone();
                 self.invite_modal_open = false;
                 self.pending_invite = None;
@@ -888,6 +1199,7 @@ impl HangApp {
                     room_id,
                     if is_host { "Host" } else { "Guest" }
                 );
+                self.toast_success(format!("Joined room: {}", room_id));
                 self.invite_modal_open = false;
                 self.pending_invite = None;
                 self.room_has_passcode = passcode_enabled;
@@ -1046,19 +1358,33 @@ impl HangApp {
     }
 
     fn fitted_video_size(&self, available: egui::Vec2) -> egui::Vec2 {
-        let aspect = self
+        // Get the original video aspect ratio
+        let original_aspect = self
             .last_frame_size
             .map(|(w, h)| w as f32 / (h.max(1) as f32))
             .unwrap_or(16.0 / 9.0);
+        
+        // Determine target aspect ratio based on mode
+        let target_aspect = match self.aspect_ratio_mode {
+            AspectRatioMode::Fill => {
+                // Fill mode: return available size directly
+                return available;
+            }
+            AspectRatioMode::Original | AspectRatioMode::Fit => original_aspect,
+            AspectRatioMode::Ratio16_9 => 16.0 / 9.0,
+            AspectRatioMode::Ratio4_3 => 4.0 / 3.0,
+            AspectRatioMode::Ratio21_9 => 21.0 / 9.0,
+        };
+        
         let mut size = available;
         if size.x <= 0.0 || size.y <= 0.0 {
             size = egui::vec2(1.0, 1.0);
         }
         let current_aspect = size.x / size.y;
-        if current_aspect > aspect {
-            size.x = size.y * aspect;
+        if current_aspect > target_aspect {
+            size.x = size.y * target_aspect;
         } else {
-            size.y = size.x / aspect;
+            size.y = size.x / target_aspect;
         }
         size.x = size.x.max(1.0);
         size.y = size.y.max(1.0);
@@ -1066,19 +1392,25 @@ impl HangApp {
     }
 
     fn handle_file_drop(&mut self, ctx: &egui::Context) {
+        // Check if files are being dragged over the window
+        let is_dragging = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        self.is_dragging_file = is_dragging;
+        
         let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
         if dropped_files.is_empty() {
             return;
         }
+        
+        self.is_dragging_file = false;
 
         for file in dropped_files {
             if let Some(path) = file.path {
                 if !Self::is_supported_video(&path) {
-                    self.error_message = Some("Unsupported file type".into());
+                    self.toast_error("Unsupported file type");
                     continue;
                 }
                 if let Err(e) = self.load_video_from_path(&path) {
-                    self.error_message = Some(format!("Failed to open dropped file: {}", e));
+                    self.toast_error(format!("Failed to open: {}", e));
                 }
                 break;
             }
@@ -1671,6 +2003,8 @@ impl eframe::App for HangApp {
         self.poll_invite_channel();
         self.poll_youtube_loader();
         self.handle_keyboard_shortcuts(ctx);
+        self.update_toasts();
+        self.update_cursor_visibility(ctx);
         
         // Request repaint while YouTube is loading
         if self.youtube_loader.is_some() {
@@ -1683,69 +2017,296 @@ impl eframe::App for HangApp {
         }
         self.update_control_visibility(ctx);
         self.maybe_auto_resume();
-        let show_chrome = !self.is_fullscreen || self.controls_visible;
+        
+        // Hide controls if cursor is hidden
+        let show_chrome = (!self.is_fullscreen || self.controls_visible) && self.cursor_visible;
 
-        // Top menu bar
+        // Top menu bar (VLC-style)
         if show_chrome {
             egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
                 egui::menu::bar(ui, |ui| {
+                    // App name/logo
                     ui.label(
                         egui::RichText::new("Hang")
-                            .font(egui::FontId::proportional(20.0))
-                            .color(egui::Color32::WHITE),
+                            .font(egui::FontId::proportional(18.0))
+                            .color(egui::Color32::from_rgb(100, 180, 255)),
                     );
-                    ui.separator();
+                    ui.add_space(8.0);
 
-                    if ui.button("Open Video").clicked() {
-                        self.select_video_file();
-                    }
-                    
-                    if ui.button("Open URL").clicked() {
-                        self.show_url_dialog = true;
-                    }
-
-                    if ui.button("⚙ Settings").clicked() {
-                        self.show_settings = !self.show_settings;
-                    }
-
-                    if ui.button("Room Controls").clicked() {
-                        self.room_dialog_open = true;
-                    }
-
-                    if ui.button("About").clicked() {
-                        self.show_about = true;
-                    }
-
-                    if ui.button("Network Stats").clicked() {
-                        self.show_network_overlay = !self.show_network_overlay;
-                    }
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let connection_label = if self.sync_connected {
-                            "Connected"
-                        } else {
-                            "Connecting..."
-                        };
-                        let label = ui.label(egui::RichText::new(connection_label).color(
-                            if self.sync_connected {
-                                egui::Color32::from_rgb(120, 255, 120)
+                    // ===== MEDIA MENU =====
+                    egui::menu::menu_button(ui, "Media", |ui| {
+                        if ui.button("📂 Open File...").clicked() {
+                            self.select_video_file();
+                            ui.close_menu();
+                        }
+                        if ui.button("🔗 Open URL...").clicked() {
+                            self.show_url_dialog = true;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        
+                        // Recent Files submenu
+                        ui.menu_button("📜 Recent Files", |ui| {
+                            if self.recent_files.is_empty() {
+                                ui.label("No recent files");
                             } else {
-                                egui::Color32::YELLOW
-                            },
-                        ));
+                                let mut file_to_open: Option<PathBuf> = None;
+                                for path in self.recent_files.iter() {
+                                    let name = path.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("Unknown");
+                                    if ui.button(name).clicked() {
+                                        file_to_open = Some(path.clone());
+                                        ui.close_menu();
+                                    }
+                                }
+                                if let Some(path) = file_to_open {
+                                    if let Err(e) = self.load_video_from_path(&path) {
+                                        self.toast_error(format!("Failed to open: {}", e));
+                                    }
+                                }
+                                ui.separator();
+                                if ui.button("🗑 Clear History").clicked() {
+                                    self.recent_files.clear();
+                                    self.save_recent_files();
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        
+                        ui.separator();
+                        if ui.button("❌ Quit").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+
+                    // ===== PLAYBACK MENU =====
+                    egui::menu::menu_button(ui, "Playback", |ui| {
+                        let play_label = if self.is_playing { "⏸ Pause" } else { "▶ Play" };
+                        if ui.button(play_label).clicked() {
+                            self.toggle_play();
+                            ui.close_menu();
+                        }
+                        if ui.button("⏹ Stop").clicked() {
+                            let _ = self.player.stop();
+                            self.is_playing = false;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        
+                        if ui.button("⏮ Previous Frame").clicked() {
+                            let _ = self.player.frame_step_backward();
+                            ui.close_menu();
+                        }
+                        if ui.button("⏭ Next Frame").clicked() {
+                            let _ = self.player.frame_step_forward();
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        
+                        if ui.button("⏪ -10 seconds").clicked() {
+                            self.seek((self.current_position - 10.0).max(0.0));
+                            ui.close_menu();
+                        }
+                        if ui.button("⏩ +10 seconds").clicked() {
+                            self.seek((self.current_position + 10.0).min(self.duration));
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        
+                        // Speed submenu
+                        ui.menu_button(format!("🚀 Speed: {:.2}x", self.speed), |ui| {
+                            for &speed in &[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0] {
+                                let label = if speed == 1.0 { 
+                                    "1.0x (Normal)".to_string() 
+                                } else { 
+                                    format!("{:.2}x", speed) 
+                                };
+                                if ui.selectable_label((self.speed - speed).abs() < 0.01, label).clicked() {
+                                    self.set_speed(speed);
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    });
+
+                    // ===== AUDIO MENU =====
+                    egui::menu::menu_button(ui, "Audio", |ui| {
+                        // Volume control
+                        ui.horizontal(|ui| {
+                            ui.label("🔊 Volume:");
+                            let mut vol = self.volume as f32;
+                            if ui.add(egui::Slider::new(&mut vol, 0.0..=100.0).show_value(true).suffix("%")).changed() {
+                                self.set_volume(vol as f64);
+                            }
+                        });
+                        
+                        ui.separator();
+                        
+                        // Audio tracks
+                        ui.label("Audio Track:");
+                        if self.audio_tracks.is_empty() {
+                            ui.label("  No audio tracks");
+                        } else {
+                            for track in &self.audio_tracks.clone() {
+                                let label = if track.lang.is_empty() {
+                                    track.title.clone()
+                                } else {
+                                    format!("{} ({})", track.title, track.lang)
+                                };
+                                if ui.selectable_label(self.selected_audio == track.id, &label).clicked() {
+                                    self.selected_audio = track.id;
+                                    let _ = self.player.set_audio_track(track.id);
+                                    self.toast_info(format!("Audio: {}", label));
+                                    ui.close_menu();
+                                }
+                            }
+                        }
+                    });
+
+                    // ===== VIDEO MENU =====
+                    egui::menu::menu_button(ui, "Video", |ui| {
+                        // Aspect Ratio submenu
+                        ui.menu_button(format!("📐 Aspect Ratio: {}", self.aspect_ratio_mode.as_str()), |ui| {
+                            for mode in AspectRatioMode::all() {
+                                if ui.selectable_label(self.aspect_ratio_mode == *mode, mode.as_str()).clicked() {
+                                    self.aspect_ratio_mode = *mode;
+                                    self.toast_info(format!("Aspect ratio: {}", mode.as_str()));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                        
+                        ui.separator();
+                        
+                        // Fullscreen toggle
+                        let fs_label = if self.is_fullscreen { "🗗 Exit Fullscreen" } else { "⛶ Fullscreen" };
+                        if ui.button(fs_label).clicked() {
+                            self.is_fullscreen = !self.is_fullscreen;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.is_fullscreen));
+                            ui.close_menu();
+                        }
+                        
+                        ui.separator();
+                        
+                        // Subtitle tracks
+                        ui.label("Subtitles:");
+                        if ui.selectable_label(self.selected_subtitle == -1, "None").clicked() {
+                            self.selected_subtitle = -1;
+                            let _ = self.player.set_subtitle_track(-1);
+                            self.toast_info("Subtitles: Off");
+                            ui.close_menu();
+                        }
+                        for track in &self.subtitle_tracks.clone() {
+                            let label = if track.lang.is_empty() {
+                                track.title.clone()
+                            } else {
+                                format!("{} ({})", track.title, track.lang)
+                            };
+                            if ui.selectable_label(self.selected_subtitle == track.id, &label).clicked() {
+                                self.selected_subtitle = track.id;
+                                let _ = self.player.set_subtitle_track(track.id);
+                                self.toast_info(format!("Subtitles: {}", label));
+                                ui.close_menu();
+                            }
+                        }
+                        
+                        // YouTube quality (only show when playing YouTube)
+                        if self.current_youtube_url.is_some() {
+                            ui.separator();
+                            ui.menu_button(format!("🎬 Quality: {}", self.youtube_quality.as_str()), |ui| {
+                                for quality in youtube::VideoQuality::all() {
+                                    if ui.selectable_label(self.youtube_quality == *quality, quality.as_str()).clicked() {
+                                        if self.youtube_quality != *quality {
+                                            self.youtube_quality = *quality;
+                                            if let Some(url) = self.current_youtube_url.clone() {
+                                                let current_pos = self.current_position;
+                                                self.load_youtube_video_at_position(&url, current_pos);
+                                            }
+                                        }
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        }
+                    });
+
+                    // ===== SYNC MENU =====
+                    egui::menu::menu_button(ui, "Sync", |ui| {
+                        if ui.button("🚪 Room Controls...").clicked() {
+                            self.room_dialog_open = true;
+                            ui.close_menu();
+                        }
+                        
+                        if self.in_room {
+                            ui.separator();
+                            if let Some(room_id) = &self.current_room_id.clone() {
+                                ui.label(format!("Room: {}", room_id));
+                                ui.label(format!("Members: {}/{}", 
+                                    self.participant_count, 
+                                    self.room_capacity_limit.unwrap_or(12)
+                                ));
+                                if self.is_host {
+                                    ui.label("👑 You are the host");
+                                }
+                            }
+                        }
+                        
+                        ui.separator();
+                        if ui.button("📊 Network Stats").clicked() {
+                            self.show_network_overlay = !self.show_network_overlay;
+                            ui.close_menu();
+                        }
+                    });
+
+                    // ===== HELP MENU =====
+                    egui::menu::menu_button(ui, "Help", |ui| {
+                        if ui.button("ℹ About Hang").clicked() {
+                            self.show_about = true;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        ui.label("Keyboard Shortcuts:");
+                        ui.label("  Space - Play/Pause");
+                        ui.label("  ←/→ - Seek ±5s");
+                        ui.label("  ↑/↓ - Volume ±5%");
+                        ui.label("  F - Fullscreen");
+                        ui.label("  M - Mute");
+                        ui.label("  Esc - Exit fullscreen");
+                    });
+
+                    // Right-aligned status
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Connection status indicator
+                        let (status_icon, status_color) = if self.sync_connected {
+                            ("●", egui::Color32::from_rgb(100, 255, 100))
+                        } else {
+                            ("○", egui::Color32::YELLOW)
+                        };
+                        
+                        let status_text = if self.in_room {
+                            format!("{} {} ({}/{})", 
+                                status_icon,
+                                self.current_room_id.as_deref().unwrap_or("Room"),
+                                self.participant_count,
+                                self.room_capacity_limit.unwrap_or(12)
+                            )
+                        } else if self.sync_connected {
+                            format!("{} Ready", status_icon)
+                        } else {
+                            format!("{} Connecting...", status_icon)
+                        };
+                        
+                        let label = ui.label(egui::RichText::new(status_text).color(status_color));
                         label.on_hover_text(&self.status_message);
 
                         if !self.sync_connected {
-                            if ui.button("Retry Connection").clicked() {
+                            if ui.small_button("Retry").clicked() {
                                 self.request_manual_reconnect();
                             }
                         } else if !self.in_room {
                             if let Some(session) = self.saved_session.as_ref() {
-                                let label = format!("Resume {}", session.room_id);
-                                if ui
-                                    .add_enabled(!self.resume_in_progress, egui::Button::new(label))
-                                    .clicked()
-                                {
+                                if ui.small_button(format!("Resume {}", session.room_id)).clicked() {
                                     self.attempt_resume(false);
                                 }
                             }
@@ -2278,9 +2839,35 @@ impl eframe::App for HangApp {
                         },
                     );
                 }
+                
+                // Drag and drop overlay
+                if self.is_dragging_file {
+                    let rect = ui.max_rect();
+                    ui.painter().rect_filled(
+                        rect,
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(0, 100, 200, 100),
+                    );
+                    ui.painter().rect_stroke(
+                        rect.shrink(20.0),
+                        10.0,
+                        egui::Stroke::new(3.0, egui::Color32::from_rgb(100, 180, 255)),
+                    );
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "📁 Drop video file here",
+                        egui::FontId::proportional(24.0),
+                        egui::Color32::WHITE,
+                    );
+                }
             });
+        
+        // Render toast notifications (always on top)
+        self.render_toasts(ctx);
 
         // Request continuous repaint for smooth updates
         ctx.request_repaint();
     }
 }
+
